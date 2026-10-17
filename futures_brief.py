@@ -7,6 +7,7 @@
     python futures_brief.py stock 铜 原油          # 同上，另外列出这几个品种的分仓库明细
     python futures_brief.py stock --date 20261016 # 指定日期
     python futures_brief.py stock --history-days 60   # 回看 60 个交易日（默认 20 天、12 周）
+    python futures_brief.py spread                # 跨月价差参考（第一次下载约 3 年数据，之后自动更新）
     python futures_brief.py news 铜 原油           # 这几个品种近 3 天的新闻列表
     python futures_brief.py news 铜 --days 7 --limit 30
     python futures_brief.py all 铜 原油            # 仓储 + 新闻一起
@@ -17,8 +18,10 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import datetime as dt
+import gzip
 import html
 import json
 import re
@@ -28,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -417,6 +421,32 @@ def summary_groups(tables: list[dict]) -> list[tuple[tuple, list[tuple[dict, dic
     return list(groups.items())
 
 
+# 周报里由脚本算出的两列：后备货 = 合格但还没做成仓单的货
+BACKUP_COLS = ("本周后备货（小计−期货）", "后备货周变化")
+
+
+def has_backup(cols) -> bool:
+    return "本周库存-小计" in cols and "本周库存-期货" in cols
+
+
+def fmt_signed(v: float | None) -> str:
+    return "—" if v is None else f"{'+' if v > 0 else ''}{fmt_number(v)}"
+
+
+def change_class(n: float | None) -> str:
+    return "" if not n else (' class="up"' if n > 0 else ' class="down"')
+
+
+def backup_texts(r: dict) -> list[str]:
+    """本周后备货 = 本周库存小计 − 本周期货；周变化 = 本周后备货 − 上周后备货。"""
+    s, w = to_number(r.get("本周库存-小计", "")), to_number(r.get("本周库存-期货", ""))
+    if s is None or w is None:
+        return ["—", "—"]
+    ps, pw = to_number(r.get("上周库存-小计", "")), to_number(r.get("上周库存-期货", ""))
+    chg = None if ps is None or pw is None else (s - w) - (ps - pw)
+    return [fmt_number(s - w), fmt_signed(chg)]
+
+
 def stock_to_markdown(kind: str, day: dt.date, url: str, parsed: dict, wanted: list[str],
                       problems: list[str]) -> str:
     name = REPORTS[kind]
@@ -431,6 +461,7 @@ def stock_to_markdown(kind: str, day: dt.date, url: str, parsed: dict, wanted: l
     ]
     if kind == "weeklystock":
         lines.append("- 「小计」= 符合交割品质的货物数量；「期货」= 已制成仓单的数量；「可用库容」= 还能制成仓单的数量。")
+        lines.append("- 最后两列「本周后备货（小计−期货）」「后备货周变化」由脚本计算：合格但还没做成仓单、随时可以去注册的货。")
     else:
         lines.append("- 「期货」/「本日数量」= 已制成仓单的货物数量；「增减」= 较上一交易日。")
     if problems:
@@ -446,10 +477,11 @@ def stock_to_markdown(kind: str, day: dt.date, url: str, parsed: dict, wanted: l
             continue
         lines += [f"## {exchange}：各品种汇总", ""]
         for cols, items in summary_groups(tables):
-            lines.append("| 品种 | 代码 | 单位 | 汇总行 | " + " | ".join(cols) + " |")
-            lines.append("|" + "---|" * (4 + len(cols)))
+            extra = list(BACKUP_COLS) if has_backup(cols) else []
+            lines.append("| 品种 | 代码 | 单位 | 汇总行 | " + " | ".join(list(cols) + extra) + " |")
+            lines.append("|" + "---|" * (4 + len(cols) + len(extra)))
             for t, r in items:
-                vals = [r.get(c, "") for c in cols]
+                vals = [r.get(c, "") for c in cols] + (backup_texts(r) if extra else [])
                 lines.append(f"| {t['product']} | {t['code']} | {t['unit']} | {row_label(t, r)} | "
                              + " | ".join(vals) + " |")
             lines.append("")
@@ -509,10 +541,15 @@ def stock_to_html_section(kind: str, day: dt.date, url: str, parsed: dict, probl
             continue
         parts.append(f"<h3>{exchange}</h3>")
         for cols, items in summary_groups(tables):
+            extra = list(BACKUP_COLS) if has_backup(cols) else []
             parts.append('<div class="wrap"><table><thead><tr><th>品种</th><th>代码</th><th>单位</th><th>汇总行</th>'
-                         + "".join(f"<th>{html.escape(c)}</th>" for c in cols) + "</tr></thead><tbody>")
+                         + "".join(f"<th>{html.escape(c)}</th>" for c in list(cols) + extra) + "</tr></thead><tbody>")
             for t, r in items:
                 tds = []
+                tail = ""
+                if extra:
+                    b, chg = backup_texts(r)
+                    tail = f"<td>{b}</td><td{change_class(to_number(chg))}>{chg}</td>"
                 for c in cols:
                     v = r.get(c, "")
                     n = to_number(v)
@@ -521,7 +558,7 @@ def stock_to_html_section(kind: str, day: dt.date, url: str, parsed: dict, probl
                         cls = ' class="up"' if n > 0 else ' class="down"'
                     tds.append(f"<td{cls}>{html.escape(v)}</td>")
                 parts.append(f"<tr><td>{html.escape(t['product'])}</td><td>{t['code']}</td><td>{html.escape(t['unit'])}</td>"
-                             f"<td>{html.escape(row_label(t, r))}</td>" + "".join(tds) + "</tr>")
+                             f"<td>{html.escape(row_label(t, r))}</td>" + "".join(tds) + tail + "</tr>")
             parts.append("</tbody></table></div>")
     parts.append("</section>")
     return "\n".join(parts)
@@ -577,12 +614,16 @@ def product_metrics(parsed: dict, kind: str) -> dict[str, dict]:
             wcol = first_col(cols, ["本周库存-期货", "本周期货", "本周库存"])
             scol = first_col(cols, ["本周库存-小计"])
         m = out.setdefault(t["base"], {"code": t["code"], "unit": t["unit"], "exchange": t["exchange"],
-                                       "warrant": None, "stock": None, "parts": []})
+                                       "warrant": None, "stock": None, "backup": None, "parts": []})
         m["parts"].append(t["product"])
+        vals = {}
         for key, col in (("warrant", wcol), ("stock", scol)):
-            v = table_total(t, col) if col else None
+            v = vals[key] = table_total(t, col) if col else None
             if v is not None:
                 m[key] = (m[key] or 0) + v
+        # 后备货 = 同一张表里的「小计 − 期货」（厂库表没有小计，不算）
+        if vals["stock"] is not None and vals["warrant"] is not None:
+            m["backup"] = (m["backup"] or 0) + vals["stock"] - vals["warrant"]
     return out
 
 
@@ -691,6 +732,8 @@ def build_trend(daily_hist: list[tuple[dt.date, dict]], weekly_hist: list[tuple[
             "库存小计（仅仓库）" if len(info["parts"]) > 1 else "库存小计")  # 厂库表没有「小计」
         w_series = [(d, m[base][key]) for d, m in w_metrics if base in m and m[base][key] is not None]
         item["weekly"] = w_series
+        b_series = [m[base]["backup"] for _, m in w_metrics if base in m and m[base]["backup"] is not None]
+        item["backup"] = (b_series[-1], b_series[-2] if len(b_series) >= 2 else None) if b_series else None
         if w_series:
             item["weekly_stats"], alerts = analyze_weekly([v for _, v in w_series])
             item["alerts"] += [(lvl, arrow, f"{item['weekly_label']}（周报）：" + txt) for lvl, arrow, txt in alerts]
@@ -766,13 +809,16 @@ def trend_to_markdown(trend: dict, wanted: list[str]) -> str:
         witems = [p for p in items if p.get("weekly")]
         if witems:
             lines += [f"## {exchange}：周度库存走势（近 {nw} 周）", "",
-                      f"| 品种 | 代码 | 单位 | 指标 | 本周 | 周变化 | {nw}周变化 | 连续下降周数 |",
-                      "|---|---|---|---|---|---|---|---|"]
+                      "后备货 = 库存小计 − 仓单：合格但还没做成仓单、随时可以去注册的货（只算有「小计」的仓库表）。", "",
+                      f"| 品种 | 代码 | 单位 | 指标 | 本周 | 周变化 | {nw}周变化 | 连续下降周数 | 后备货 | 后备货周变化 |",
+                      "|---|---|---|---|---|---|---|---|---|---|"]
             for p in witems:
                 s = p["weekly_stats"]
+                b = p.get("backup")
                 lines.append(f"| {display_name(p)} | {p['code']} | {p['unit']} | {p['weekly_label']} | "
                              f"{fmt_number(s['latest'])} | {fmt_chg(s['latest'], s['prev'])} | "
-                             f"{fmt_chg(s['latest'], s['first'])} | {s['streak']} |")
+                             f"{fmt_chg(s['latest'], s['first'])} | {s['streak']} | "
+                             f"{fmt_number(b[0]) if b else '—'} | {fmt_chg(*b) if b else '—'} |")
             lines.append("")
 
     picked = [p for p in trend["products"] if p["base"] in wanted]
@@ -872,7 +918,7 @@ def trend_to_html_section(trend: dict) -> str:
         parts.append(f"<h3>{exchange}</h3><div class='wrap'><table><thead><tr>"
                      "<th>品种</th><th>代码</th><th>单位</th><th>最新仓单</th><th>日增减</th><th>5日变化</th>"
                      f"<th>近 {len(dd)} 日仓单走势</th><th>周度指标</th><th>本周</th><th>周变化</th>"
-                     f"<th>近 {len(wd)} 周走势</th></tr></thead><tbody>")
+                     f"<th>近 {len(wd)} 周走势</th><th>后备货</th><th>后备货周变化</th></tr></thead><tbody>")
         for p in items:
             s = p["daily_stats"]
             ws = p.get("weekly_stats")
@@ -883,10 +929,365 @@ def trend_to_html_section(trend: dict) -> str:
                 f"<td>{sparkline(p['daily'], p['unit'])}</td>"
                 f"<td>{p['weekly_label'] if ws else '—'}</td><td>{fmt_number(ws['latest']) if ws else '—'}</td>"
                 f"{change_cell(pct(ws['latest'], ws['prev']) if ws else None)}"
-                f"<td>{sparkline(p['weekly'], p['unit']) if ws else ''}</td></tr>")
+                f"<td>{sparkline(p['weekly'], p['unit']) if ws else ''}</td>"
+                f"<td>{fmt_number(p['backup'][0]) if p.get('backup') else '—'}</td>"
+                f"{change_cell(pct(*p['backup']) if p.get('backup') else None)}</tr>")
         parts.append("</tbody></table></div>")
     parts.append("</section>")
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------- 跨月价差参考（仓单覆盖率 × 历史百分位）
+
+# 做跨月价差统计的品种（用户指定）
+SPREAD_CODES = ["au", "al", "ao", "rb", "hc", "pb", "zn", "sn", "cu", "nr", "br"]
+# 每手数量和单位，取自上期所官网 product_config.dat 的 contract_number / unit_cn
+LOT_SIZE = {"au": (1000, "克"), "al": (5, "吨"), "ao": (20, "吨"), "rb": (10, "吨"), "hc": (10, "吨"),
+            "pb": (5, "吨"), "zn": (5, "吨"), "sn": (1, "吨"), "cu": (5, "吨"), "nr": (10, "吨"), "br": (5, "吨")}
+CODE_TO_NAME = {code: name for name, code in PRODUCT_CODES.items()}
+SPREAD_RULES = {
+    "百分位邻域": 10,  # 覆盖率历史百分位上下 10 个百分点以内算"同样的百分位"
+    "日期邻域": 5,     # 月内日期前后 5 天以内算"离交割差不多远"
+    "最少样本": 20,    # 同类样本少于 20 天，标「参考性弱」
+    "成交少": 100,     # 近月或下月当天成交少于 100 手，标「成交少」
+}
+HISTORY_DIR = CACHE / "历史"
+SPREAD_SUMMARY = CACHE / "价差历史汇总.json"
+SHFE_OLD_STOCK_URL = "https://www.shfe.com.cn/data/tradedata/future/dailydata/{date}dailystock.dat"
+SHFE_KX_URL = "https://www.shfe.com.cn/data/tradedata/future/dailydata/kx{date}.dat"
+NEW_FORMAT_FROM = dt.date(2025, 11, 1)  # 大约从这时起仓单日报换成新格式，之前是旧格式
+OLD_UNITS = {"1": "千克", "2": "吨", "3": "桶"}
+
+
+def fetch_gz(url: str, path: Path, valid) -> str | None:
+    """下载后压缩保存（约省 90% 空间）；下载过的直接读本地。交易所没有这个文件时返回 None。"""
+    if path.exists():
+        return gzip.decompress(path.read_bytes()).decode("utf-8")
+    status, text = http_get(url, referer=SHFE_PAGE)
+    if status == 200 and valid(text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(gzip.compress(text.encode("utf-8")))
+        return text
+    return None
+
+
+def warrants_old(text: str) -> dict[str, tuple[float, str]]:
+    """旧格式仓单日报（JSON）：每个品种的仓单总数，仓库 + 厂库相加。"""
+    groups: dict[str, list] = {}
+    for r in json.loads(text).get("o_cursor") or []:
+        groups.setdefault(str(r.get("VARNAME", "")).split("$$")[0].strip(), []).append(r)
+    out: dict[str, tuple[float, str]] = {}
+    for name, rows in groups.items():
+        code = PRODUCT_CODES.get(re.sub(r"(仓库|厂库)$", "", name))
+        if code not in LOT_SIZE:
+            continue
+        label = lambda r, k: str(r.get(k) or "").split("$$")[0].strip()
+        total = [r for r in rows if label(r, "WHABBRNAME") == "总计"]
+        if total:
+            v = float(total[0].get("WRTWGHTS") or 0)
+        else:
+            v = sum(float(r.get("WRTWGHTS") or 0) for r in rows
+                    if "计" not in label(r, "REGNAME") + label(r, "WHABBRNAME"))
+        unit = OLD_UNITS.get(str(rows[0].get("WGHTUNIT")), "")
+        out[code] = (out.get(code, (0.0, unit))[0] + v, unit)
+    return out
+
+
+def warrants_new(text: str) -> dict[str, tuple[float, str]]:
+    """新格式仓单日报（HTML）：沿用上面的表格解析。"""
+    out = {}
+    for base, m in product_metrics(parse_stock_html(text), "dailystock").items():
+        code = PRODUCT_CODES.get(base)
+        if code in LOT_SIZE and m["warrant"] is not None:
+            out[code] = (m["warrant"], m["unit"])
+    return out
+
+
+def quotes_from_kx(text: str) -> dict[str, dict[str, list]]:
+    """每日行情：{代码: {交割月: [结算价, 持仓量, 成交量]}}，只要期货。"""
+    out: dict[str, dict[str, list]] = {}
+    for x in json.loads(text).get("o_curinstrument") or []:
+        code = str(x.get("PRODUCTGROUPID", "")).strip()
+        month = str(x.get("DELIVERYMONTH", "")).strip()
+        if code not in LOT_SIZE or not month.isdigit() or str(x.get("PRODUCTCLASS")) != "1":
+            continue
+        out.setdefault(code, {})[month] = [to_number(str(x.get(k, ""))) for k in
+                                           ("SETTLEMENTPRICE", "OPENINTEREST", "VOLUME")]
+    return out
+
+
+def day_summary(d: dt.date) -> dict | None:
+    """某个交易日的仓单 + 各合约行情。交易所没有数据时返回 None；网络出错会抛 RuntimeError。"""
+    ds = d.strftime("%Y%m%d")
+    kx = fetch_gz(SHFE_KX_URL.format(date=ds), HISTORY_DIR / f"kx_{ds}.dat.gz",
+                  lambda t: "o_curinstrument" in t)
+    if kx is None:
+        return None
+    recent = CACHE / f"dailystock_{ds}.html"
+    if recent.exists():
+        w = warrants_new(recent.read_text(encoding="utf-8"))
+    else:
+        new = lambda: fetch_gz(report_url("dailystock", d), HISTORY_DIR / f"dailystock_{ds}.html.gz",
+                               lambda t: "el-table_table" in t)
+        old = lambda: fetch_gz(SHFE_OLD_STOCK_URL.format(date=ds), HISTORY_DIR / f"dailystock_{ds}.dat.gz",
+                               lambda t: '"o_cursor"' in t)
+        w = None
+        for fmt, getter, parse in ((("new", new, warrants_new), ("old", old, warrants_old))
+                                   if d >= NEW_FORMAT_FROM else
+                                   (("old", old, warrants_old), ("new", new, warrants_new))):
+            text = getter()
+            if text:
+                w = parse(text)
+                break
+        if w is None:
+            return None
+    q = quotes_from_kx(kx)
+    return {code: {"w": w[code][0], "unit": w[code][1], "q": q.get(code, {})} for code in LOT_SIZE if code in w}
+
+
+def update_spread_history(latest: dt.date, years: int) -> dict[str, dict]:
+    """补齐回看期内每个交易日的数据（只下载缺的），返回 {日期: 当天数据}。"""
+    summary: dict[str, dict | None] = {}
+    if SPREAD_SUMMARY.exists():
+        summary = json.loads(SPREAD_SUMMARY.read_text(encoding="utf-8"))
+    start = latest - dt.timedelta(days=round(365.25 * years))
+    days = [start + dt.timedelta(days=i) for i in range((latest - start).days + 1)]
+    todo = [d for d in days if is_trading_day(d) and d.strftime("%Y%m%d") not in summary]
+    if todo:
+        log(f"  需要补 {len(todo)} 个交易日的仓单和行情（第一次会比较久，之后只补新的）……")
+    failed = 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = {pool.submit(day_summary, d): d for d in todo}
+        for i, job in enumerate(as_completed(jobs), 1):
+            d = jobs[job]
+            try:
+                res = job.result()
+            except RuntimeError:
+                failed += 1  # 网络问题：不记录，下次再试
+                continue
+            if res is not None:
+                summary[d.strftime("%Y%m%d")] = res
+            elif (dt.date.today() - d).days > 3:
+                summary[d.strftime("%Y%m%d")] = None  # 交易所确实没有这天的数据，以后不再重试
+            if i % 50 == 0 or i == len(todo):
+                log(f"    进度 {i}/{len(todo)}")
+                write_text(SPREAD_SUMMARY, json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
+    write_text(SPREAD_SUMMARY, json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
+    if failed:
+        log(f"  ⚠ 有 {failed} 天因为网络问题没取到，下次运行会自动补")
+    return {k: v for k, v in summary.items() if v and start <= parse_date(k) <= latest}
+
+
+def month_code(d: dt.date, ahead: int) -> str:
+    """d 所在月份往后 ahead 个月的合约月份，如 2026-10 往后 1 个月 → 2611。"""
+    m = d.month - 1 + ahead
+    return f"{(d.year + m // 12) % 100:02d}{m % 12 + 1:02d}"
+
+
+def spread_rows(history: dict[str, dict], code: str) -> list[dict]:
+    lot, lot_unit = LOT_SIZE[code]
+    rows = []
+    for ds in sorted(history):
+        day = history[ds].get(code)
+        if not day:
+            continue
+        d = parse_date(ds)
+        row = {"date": d, "near": month_code(d, 1), "far": month_code(d, 2), "warrant": day["w"], "unit": day["unit"]}
+        row["lots"] = day["w"] * (1000 if day["unit"] == "千克" and lot_unit == "克" else 1) / lot
+        qn, qf = day["q"].get(row["near"]), day["q"].get(row["far"])
+        if qn and qf and qn[0] and qf[0]:
+            row.update(near_settle=qn[0], far_settle=qf[0], near_oi=qn[1], near_vol=qn[2], far_vol=qf[2],
+                       spread=qn[0] - qf[0], spread_pct=(qn[0] - qf[0]) / qf[0] * 100,
+                       coverage=row["lots"] / qn[1] * 100 if qn[1] else None)
+        rows.append(row)
+    return rows
+
+
+def percentile(vals: list[float], q: float) -> float:
+    s = sorted(vals)
+    k = (len(s) - 1) * q / 100
+    lo = int(k)
+    return s[lo] + (s[min(lo + 1, len(s) - 1)] - s[lo]) * (k - lo)
+
+
+def analyze_spread(code: str, rows: list[dict]) -> dict:
+    res = {"code": code, "name": CODE_TO_NAME.get(code, code), "rows": rows}
+    if not rows:
+        res["status"] = "无数据"
+        return res
+    cur = rows[-1]
+    res["cur"] = cur
+    if "spread" not in cur:
+        res["status"] = "none"  # 近月或下月合约不存在
+        return res
+    hist = [r for r in rows if r.get("coverage") is not None]
+    if cur.get("coverage") is None or len(hist) < 2:
+        res["status"] = "近月持仓为 0"
+        return res
+    covs = sorted(r["coverage"] for r in hist)
+    for r in hist:
+        r["rank"] = bisect.bisect_right(covs, r["coverage"]) / len(covs) * 100
+    R = SPREAD_RULES
+    this_month = (cur["date"].year, cur["date"].month)
+    # 只看覆盖率：覆盖率排名相近的日子（不管月内日期）；同类 = 在此基础上再要求月内日期相近
+    cov_peers = [r for r in hist
+                 if (r["date"].year, r["date"].month) != this_month
+                 and abs(r["rank"] - cur["rank"]) <= R["百分位邻域"]]
+    peers = [r for r in cov_peers if abs(r["date"].day - cur["date"].day) <= R["日期邻域"]]
+    res.update(status="ok", rank=cur["rank"], n_hist=len(hist), peers=peers, cov_peers=cov_peers,
+               cov_lo=min(r["coverage"] for r in cov_peers) if cov_peers else None,
+               cov_hi=max(r["coverage"] for r in cov_peers) if cov_peers else None)
+    if cov_peers:
+        cp = [r["spread_pct"] for r in cov_peers]
+        res.update({f"cy{q}": percentile(cp, q) / 100 * cur["far_settle"] for q in (10, 50, 90)})
+    notes = []
+    if peers:
+        pcts = [r["spread_pct"] for r in peers]
+        p10, p50, p90 = (percentile(pcts, q) for q in (10, 50, 90))
+        to_yuan = lambda p: p / 100 * cur["far_settle"]
+        res.update(p10=p10, p50=p50, p90=p90, y10=to_yuan(p10), y50=to_yuan(p50), y90=to_yuan(p90),
+                   peer_pos=sum(1 for v in pcts if v < cur["spread_pct"]) / len(pcts) * 100)
+        if cur["spread_pct"] > p90:
+            res["verdict"] = "偏高（近月比历史同类情况更贵）"
+        elif cur["spread_pct"] < p10:
+            res["verdict"] = "偏低（近月比历史同类情况更便宜）"
+        else:
+            res["verdict"] = "在区间内"
+        if len(peers) < R["最少样本"]:
+            notes.append("样本少，参考性弱")
+    else:
+        res["verdict"] = "没有可比的历史日子"
+    if min(cur.get("near_vol") or 0, cur.get("far_vol") or 0) < R["成交少"]:
+        notes.append("成交少，价差可能失真")
+    res["notes"] = notes
+    return res
+
+
+def fmt_price(v: float | None, code: str, signed: bool = False) -> str:
+    if v is None:
+        return "—"
+    s = f"{v:{'+' if signed else ''}.{2 if code == 'au' else 0}f}"
+    return s.lstrip("+-") if float(s) == 0 else s
+
+
+def peer_pos_text(r: dict) -> str:
+    return "—" if r.get("peer_pos") is None else f"{r['peer_pos']:.0f}%"
+
+
+def cov_range_text(r: dict) -> str:
+    """只看覆盖率的价差区间，带上覆盖率范围和样本天数。"""
+    if r.get("cy10") is None:
+        return "—"
+    c = r["code"]
+    return (f"{fmt_price(r['cy10'], c, True)} ~ {fmt_price(r['cy90'], c, True)}"
+            f"（覆盖率 {r['cov_lo']:.1f}%~{r['cov_hi']:.1f}%，{len(r['cov_peers'])} 天）")
+
+
+def build_spread(latest: dt.date, years: int) -> tuple[list[dict], dict]:
+    history = update_spread_history(latest, years)
+    results = [analyze_spread(code, spread_rows(history, code)) for code in SPREAD_CODES]
+    dates = sorted(history)
+    span = (parse_date(dates[0]), parse_date(dates[-1]), len(dates)) if dates else None
+    return results, {"span": span, "years": years}
+
+
+SPREAD_EXPLAIN = [
+    "**覆盖率** = 仓单（换算成手）÷ 近月合约持仓。覆盖率低 = 能交的货相对等着交割的合约少，近月更容易被挤。",
+    "**近月 / 下月**：当前月份之后最近的交割月 / 再往后一个月（如 10 月份时是 2611 / 2612）。合约不存在写 none。",
+    "**价差** = 近月结算价 − 下月结算价。正数 = 近月比下月贵。",
+    "**覆盖率排名**：今天的覆盖率在回看期里排第几（20% = 比 80% 的日子都低）。它只说覆盖率，跟价差无关。",
+    "**价差在同类中的位置**：现在的价差比多少「同类日子」的价差高。100% = 比所有同类日子都高，0% = 比所有都低。",
+    "**历史同类区间**：在回看期里找覆盖率排名相差不超过 {pct} 个百分点、而且月内日期相差不超过 {day} 天的日子"
+    "（不含本月），把那些日子的价差按「占下月价格的百分比」统计，取中间 80%（第 10~90 百分位），再按今天的下月价格换算成元。",
+    "**只看覆盖率的区间**：和上面一样算，但不管月内日期，只要覆盖率排名相差不超过 {pct} 个百分点就算（括号里是这些日子的覆盖率范围和天数）。"
+    "样本更多，但混进了离交割远近不同的日子；判断「偏高 / 偏低」仍以「历史同类区间」为准。",
+    "这是历史统计，不是预测；行情环境变了，区间也会失效。",
+]
+
+
+def spread_to_markdown(results: list[dict], meta: dict) -> str:
+    span = meta["span"]
+    lines = ["# 跨月价差参考：仓单覆盖率 × 历史同类情况", ""]
+    if span:
+        lines += [f"- 回看期：{span[0]:%Y-%m-%d} ~ {span[1]:%Y-%m-%d}，共 {span[2]} 个交易日（数据来自上期所仓单日报和每日行情）。"]
+    R = SPREAD_RULES
+    lines += [f"- {t.format(pct=R['百分位邻域'], day=R['日期邻域'])}" for t in SPREAD_EXPLAIN] + [""]
+    lines += ["| 品种 | 代码 | 近月/下月 | 仓单(手) | 近月持仓(手) | 覆盖率 | 覆盖率排名 | 现在价差 | "
+              "价差在同类中的位置 | 历史同类区间（中间80%） | 同类中位数 | 样本天数 | 只看覆盖率的区间（中间80%） | 判断 | 备注 |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for r in results:
+        c = r["code"]
+        cur = r.get("cur")
+        if r["status"] != "ok":
+            pair = f"{c}{cur['near']}/{c}{cur['far']}" if cur else "—"
+            lines.append(f"| {r['name']} | {c} | {pair} | — | — | — | — | none | — | — | — | — | — | — | {r['status']} |")
+            continue
+        rng = f"{fmt_price(r['y10'], c, True)} ~ {fmt_price(r['y90'], c, True)}" if "y10" in r else "—"
+        lines.append(
+            f"| {r['name']} | {c} | {c}{cur['near']}/{c}{cur['far']} | {cur['lots']:.0f} | {fmt_number(cur['near_oi'])} | "
+            f"{cur['coverage']:.1f}% | {r['rank']:.0f}% | {fmt_price(cur['spread'], c, True)} | "
+            f"{peer_pos_text(r)} | {rng} | "
+            f"{fmt_price(r.get('y50'), c, True)} | {len(r['peers'])} | {cov_range_text(r)} | {r['verdict']} | {'；'.join(r['notes']) or '—'} |")
+    lines += ["", "单位：价差为元/吨（黄金为元/克）。", ""]
+    return "\n".join(lines)
+
+
+def spread_to_csv(path: Path, results: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["日期", "代码", "近月", "下月", "仓单", "仓单单位", "仓单(手)", "近月持仓(手)", "覆盖率%",
+                    "近月结算价", "下月结算价", "价差", "价差占下月%", "近月成交", "下月成交"])
+        for r in results:
+            for row in r["rows"]:
+                g = lambda k, fmt="{:g}": fmt.format(row[k]) if row.get(k) is not None else ""
+                w.writerow([row["date"].strftime("%Y-%m-%d"), r["code"], row["near"], row["far"], g("warrant"),
+                            row["unit"], g("lots", "{:.0f}"), g("near_oi"), g("coverage", "{:.2f}"),
+                            g("near_settle"), g("far_settle"), g("spread"), g("spread_pct", "{:.3f}"),
+                            g("near_vol"), g("far_vol")])
+
+
+def spread_to_html_section(results: list[dict], meta: dict) -> str:
+    span = meta["span"]
+    R = SPREAD_RULES
+    explain = "<br>".join(html.escape(re.sub(r"\*\*", "", t.format(pct=R["百分位邻域"], day=R["日期邻域"])))
+                          for t in SPREAD_EXPLAIN)
+    parts = [f"<section><h2>跨月价差参考 <small>{span[0]:%Y-%m-%d} ~ {span[1]:%Y-%m-%d} · {span[2]} 个交易日</small></h2>"
+             if span else "<section><h2>跨月价差参考</h2>",
+             f'<p class="note">{explain}</p><div class="wrap"><table><thead><tr>'
+             "<th>品种</th><th>代码</th><th>近月/下月</th><th>覆盖率</th><th>覆盖率排名</th><th>现在价差</th>"
+             "<th>价差在同类中的位置</th><th>同类区间（中间80%）</th><th>同类中位数</th><th>样本</th><th>只看覆盖率的区间（中间80%）</th><th>判断</th><th>备注</th></tr></thead><tbody>"]
+    for r in results:
+        c = r["code"]
+        cur = r.get("cur")
+        if r["status"] != "ok":
+            pair = f"{c}{cur['near']}/{c}{cur['far']}" if cur else "—"
+            parts.append(f"<tr><td>{r['name']}</td><td>{c}</td><td>{pair}</td><td>—</td><td>—</td><td>none</td>"
+                         f"<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>{html.escape(r['status'])}</td></tr>")
+            continue
+        rng = f"{fmt_price(r['y10'], c, True)} ~ {fmt_price(r['y90'], c, True)}" if "y10" in r else "—"
+        cls = ' class="up"' if r["verdict"].startswith("偏高") else ' class="down"' if r["verdict"].startswith("偏低") else ""
+        parts.append(
+            f"<tr><td>{r['name']}</td><td>{c}</td><td>{c}{cur['near']}/{c}{cur['far']}</td>"
+            f"<td>{cur['coverage']:.1f}%</td><td>{r['rank']:.0f}%</td><td>{fmt_price(cur['spread'], c, True)}</td>"
+            f"<td{cls}>{peer_pos_text(r)}</td><td>{rng}</td><td>{fmt_price(r.get('y50'), c, True)}</td><td>{len(r['peers'])}</td>"
+            f"<td>{html.escape(cov_range_text(r))}</td><td{cls}>{html.escape(r['verdict'])}</td><td>{html.escape('；'.join(r['notes']) or '—')}</td></tr>")
+    parts.append("</tbody></table></div>"
+                 '<p class="note">价差单位：元/吨（黄金为元/克）。逐日明细见 output/仓储/日期/ 里的「价差历史」CSV。</p></section>')
+    return "\n".join(parts)
+
+
+def write_spread_outputs(latest: dt.date, years: int) -> tuple[list[Path], str]:
+    results, meta = build_spread(latest, years)
+    folder = OUTPUT / "仓储" / f"{latest:%Y-%m-%d}"
+    stamp = latest.strftime("%Y%m%d")
+    md = folder / f"跨月价差_{stamp}.md"
+    write_text(md, spread_to_markdown(results, meta))
+    csv_path = folder / f"价差历史_{stamp}.csv"
+    spread_to_csv(csv_path, results)
+    ok = sum(1 for r in results if r["status"] == "ok")
+    log(f"  跨月价差：{ok}/{len(results)} 个品种算出区间 → {md.relative_to(ROOT)}")
+    return [md, csv_path], spread_to_html_section(results, meta)
 
 
 HTML_PAGE = """<!doctype html>
@@ -972,6 +1373,14 @@ def run_stock(args) -> list[Path]:
         n_alert = sum(1 for p in trend["products"] if p["alerts"])
         log(f"  {len(daily_hist)} 个交易日 + {len(weekly_hist)} 周，{n_alert} 个品种有风险提示 → {md.relative_to(ROOT)}")
 
+    if SPREAD_SUMMARY.exists():
+        log("正在更新跨月价差参考……")
+        files, section = write_spread_outputs(latest["dailystock"], args.years)
+        made += files
+        sections.insert(1 if args.history_days > 1 else 0, section)
+    else:
+        log("  （提示：运行一次 python futures_brief.py spread 可生成跨月价差参考，之后每次自动更新）")
+
     page = OUTPUT / "仓储速览.html"
     write_text(page, HTML_PAGE.format(date=f"{latest['dailystock']:%Y-%m-%d}",
                                       now=f"{dt.datetime.now():%Y-%m-%d %H:%M}", sections="\n".join(sections)))
@@ -980,6 +1389,15 @@ def run_stock(args) -> list[Path]:
     if args.open:
         webbrowser.open(page.as_uri())
     return made
+
+
+def run_spread(args) -> list[Path]:
+    log("正在确定最新交易日……")
+    day, _, _ = fetch_stock("dailystock", parse_date(args.date), 10)
+    log(f"正在生成跨月价差参考（截至 {day:%Y-%m-%d}，回看 {args.years} 年）……")
+    files, _ = write_spread_outputs(day, args.years)
+    log("  网页版会在下次运行 stock（或双击 .bat）时一起显示。")
+    return files
 
 
 # ---------------------------------------------------------------- 新闻
@@ -1089,6 +1507,7 @@ def main() -> int:
         p.add_argument("--date", help="日期，如 20261016；默认今天，自动往前找最近有数据的一天")
         p.add_argument("--history-days", type=int, default=20, help="回看多少个交易日的仓单（默认 20；0 = 不看历史）")
         p.add_argument("--history-weeks", type=int, default=12, help="回看多少周的库存周报（默认 12）")
+        p.add_argument("--years", type=int, default=3, help="跨月价差参考回看几年（默认 3）")
         p.add_argument("--open", action="store_true", help="完成后用浏览器打开网页版")
 
     def add_news_opts(p):
@@ -1098,6 +1517,9 @@ def main() -> int:
     p = sub.add_parser("stock", help="仓单日报 + 库存周报")
     p.add_argument("products", nargs="*", help="可选：要看分仓库明细的品种")
     add_stock_opts(p)
+    p = sub.add_parser("spread", help="跨月价差参考（第一次要下载约 3 年数据）")
+    p.add_argument("--date", help="日期，如 20261016；默认今天，自动往前找最近有数据的一天")
+    p.add_argument("--years", type=int, default=3, help="回看几年（默认 3）")
     p = sub.add_parser("news", help="品种新闻列表")
     p.add_argument("products", nargs="+", help="品种，如 铜 原油")
     add_news_opts(p)
@@ -1111,6 +1533,8 @@ def main() -> int:
     try:
         if args.cmd in ("stock", "all"):
             made += run_stock(args)
+        if args.cmd == "spread":
+            made += run_spread(args)
         if args.cmd in ("news", "all"):
             made += run_news(args)
     except RuntimeError as e:
