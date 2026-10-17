@@ -579,11 +579,17 @@ RISK_RULES = {
     "周连降_最小降幅": 10,  # ……且这几周累计降幅至少 10%，否则不算
     "周区间降_高": -30,  # 回看期内周度库存下降超过 30% → 【高】
     "周区间增_提示": 50,  # 回看期内周度库存增加超过 50% → 【提示】
+    # 近月覆盖率（仓单 ÷ 近月持仓）跟过去几年「每月同一时段」比，排名越低越紧。只看跨月价差那 11 个品种。
+    "覆盖率同期_高": 5,    # 比 95% 的同期日子都低 → 【高】
+    "覆盖率同期_中": 15,   # 比 85% 的同期日子都低 → 【中】
+    "覆盖率_上限": 100,    # 覆盖率在 100% 以上（仓单够交全部近月持仓）不提示
 }
 
 MEANING_DOWN = ("仓单 / 库存减少：交易所仓库里能拿去交割的货变少，现货偏紧。离交割月越近、持仓越大，"
                 "空头越难交货，价格容易被推高（俗称「挤仓」风险）。")
 MEANING_UP = "仓单 / 库存增加：可交割的货变多，供应偏宽松，对价格有压力；空头交货更容易。"
+MEANING_COVER = ("近月覆盖率低：仓单相对近月合约持仓偏少。如果多头一直拿到交割，空头可能凑不齐货，"
+                 "近月价格容易比下月更贵（挤仓风险）。")
 
 LEVEL_ORDER = {"高": 0, "中": 1, "提示": 2}
 
@@ -780,6 +786,7 @@ def trend_to_markdown(trend: dict, wanted: list[str]) -> str:
         "",
         f"**怎么理解**：{MEANING_DOWN}",
         f"{MEANING_UP}",
+        f"{MEANING_COVER}",
         "",
     ]
     flagged = flagged_products(trend)
@@ -850,6 +857,11 @@ def trend_to_markdown(trend: dict, wanted: list[str]) -> str:
         f"- 【提示】创回看期新低或新高；近 5 个交易日增幅超过 {R['5日增_提示']}%；仓单从 0 开始增加；"
         f"周度库存回看期增幅超过 {R['周区间增_提示']}%。",
         "- 回看期内一直是 0 的品种不提示。数量本身很小的品种（如几百吨），百分比会被放大，请结合绝对数量看。",
+        f"- 近月覆盖率（只看 {'、'.join(SPREAD_CODES)}）：覆盖率 = 仓单（换算成手）÷ 近月合约持仓，"
+        f"跟过去几年每月同一时段（月内日期前后 {SPREAD_RULES['日期邻域']} 天，不含本月）的日子比；"
+        f"比 {100 - R['覆盖率同期_高']}% 的同期日子都低 →【高】，比 {100 - R['覆盖率同期_中']}% 都低 →【中】。"
+        f"覆盖率在 {R['覆盖率_上限']}% 以上、或同期样本少于 {SPREAD_RULES['最少样本']} 天时不提示。"
+        "需要先运行过一次 python futures_brief.py spread。",
         "",
     ]
     return "\n".join(lines)
@@ -899,6 +911,7 @@ def trend_to_html_section(trend: dict) -> str:
     dd, wd = trend["daily_dates"], trend["weekly_dates"]
     parts = [f'<section><h2>趋势与风险提示 <small>日度近 {len(dd)} 个交易日 · 周度近 {len(wd)} 周</small></h2>',
              f'<p class="note">{html.escape(MEANING_DOWN)}<br>{html.escape(MEANING_UP)}<br>'
+             f'{html.escape(MEANING_COVER)}<br>'
              '以下由固定规则自动判断，只说明数据变化，不构成买卖建议。走势线上的点可以用鼠标悬停查看日期和数值。</p>']
     flagged = flagged_products(trend)
     if flagged:
@@ -1110,6 +1123,28 @@ def percentile(vals: list[float], q: float) -> float:
     return s[lo] + (s[min(lo + 1, len(s) - 1)] - s[lo]) * (k - lo)
 
 
+def coverage_alerts(code: str, hist: list[dict], cur: dict, res: dict) -> list[tuple[str, str, str]]:
+    """近月覆盖率跟过去每月同一时段比：排名越低 = 仓单相对近月持仓越少。"""
+    R, S = RISK_RULES, SPREAD_RULES
+    this_month = (cur["date"].year, cur["date"].month)
+    same = sorted(r["coverage"] for r in hist
+                  if r["date"] < cur["date"] and (r["date"].year, r["date"].month) != this_month
+                  and abs(r["date"].day - cur["date"].day) <= S["日期邻域"])
+    if len(same) < S["最少样本"]:
+        return []
+    rank = bisect.bisect_right(same, cur["coverage"]) / len(same) * 100
+    res.update(same_rank=rank, same_n=len(same))
+    if cur["coverage"] >= R["覆盖率_上限"]:
+        return []
+    lvl = "高" if rank <= R["覆盖率同期_高"] else "中" if rank <= R["覆盖率同期_中"] else None
+    if not lvl:
+        return []
+    lower = "比全部同期日子都低" if rank == 0 else f"比 {100 - rank:.0f}% 的同期日子都低"
+    return [(lvl, "↓", f"近月覆盖率（{code}{cur['near']}）：{cur['coverage']:.1f}%"
+             f"（仓单 {cur['lots']:.0f} 手 ÷ 近月持仓 {fmt_number(cur['near_oi'])} 手），"
+             f"跟过去每月 {cur['date'].day} 号前后 {S['日期邻域']} 天的 {len(same)} 个交易日比，{lower}")]
+
+
 def analyze_spread(code: str, rows: list[dict]) -> dict:
     res = {"code": code, "name": CODE_TO_NAME.get(code, code), "rows": rows}
     if not rows:
@@ -1137,6 +1172,7 @@ def analyze_spread(code: str, rows: list[dict]) -> dict:
     res.update(status="ok", rank=cur["rank"], n_hist=len(hist), peers=peers, cov_peers=cov_peers,
                cov_lo=min(r["coverage"] for r in cov_peers) if cov_peers else None,
                cov_hi=max(r["coverage"] for r in cov_peers) if cov_peers else None)
+    res["alerts"] = coverage_alerts(code, hist, cur, res)
     if cov_peers:
         cp = [r["spread_pct"] for r in cov_peers]
         res.update({f"cy{q}": percentile(cp, q) / 100 * cur["far_settle"] for q in (10, 50, 90)})
@@ -1228,7 +1264,11 @@ def spread_to_markdown(results: list[dict], meta: dict) -> str:
             f"{cur['coverage']:.1f}% | {r['rank']:.0f}% | {fmt_price(cur['spread'], c, True)} | "
             f"{peer_pos_text(r)} | {rng} | "
             f"{fmt_price(r.get('y50'), c, True)} | {len(r['peers'])} | {cov_range_text(r)} | {r['verdict']} | {'；'.join(r['notes']) or '—'} |")
-    lines += ["", "单位：价差为元/吨（黄金为元/克）。", ""]
+    lines += ["", "单位：价差为元/吨（黄金为元/克）。", "", "## 近月覆盖率风险提示", "",
+              "跟过去每月同一时段比，覆盖率偏低就提示（规则见「仓储趋势」文件末尾；这些提示也已并入那里的风险提示）。", ""]
+    alerts = [(r, a) for r in results for a in r.get("alerts", [])]
+    lines += [f"- {r['name']} {r['code']}：【{lvl}】{arrow} {txt}" for r, (lvl, arrow, txt) in alerts] or ["- 没有品种触发。"]
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -1277,8 +1317,8 @@ def spread_to_html_section(results: list[dict], meta: dict) -> str:
     return "\n".join(parts)
 
 
-def write_spread_outputs(latest: dt.date, years: int) -> tuple[list[Path], str]:
-    results, meta = build_spread(latest, years)
+def write_spread_outputs(latest: dt.date, years: int, built=None) -> tuple[list[Path], str]:
+    results, meta = built or build_spread(latest, years)
     folder = OUTPUT / "仓储" / f"{latest:%Y-%m-%d}"
     stamp = latest.strftime("%Y%m%d")
     md = folder / f"跨月价差_{stamp}.md"
@@ -1322,6 +1362,14 @@ ul.alerts {{ padding-left: 18px; font-size: 13px; line-height: 1.7; }} ul.alerts
 """
 
 
+def add_coverage_alerts(trend: dict, results: list[dict]) -> None:
+    by_code = {p["code"]: p for p in trend["products"]}
+    for r in results:
+        p = by_code.get(r["code"])
+        if p and r.get("alerts"):
+            p["alerts"] = sorted(p["alerts"] + r["alerts"], key=lambda a: LEVEL_ORDER[a[0]])
+
+
 def run_stock(args) -> list[Path]:
     start = parse_date(args.date)
     wanted = resolve_products(args.products)
@@ -1349,6 +1397,12 @@ def run_stock(args) -> list[Path]:
         for msg in problems:
             log(f"  ⚠ 自检：{msg}")
 
+    # 先算跨月价差（里面有近月覆盖率风险提示，要并进趋势文件）
+    spread_built = None
+    if SPREAD_SUMMARY.exists():
+        log("正在更新跨月价差参考……")
+        spread_built = build_spread(latest["dailystock"], args.years)
+
     if args.history_days > 1:
         log(f"正在整理历史：近 {args.history_days} 个交易日仓单、近 {args.history_weeks} 周库存"
             "（第一次需要下载，以后只下载新的）……")
@@ -1360,6 +1414,8 @@ def run_stock(args) -> list[Path]:
                 for msg in check_totals(t):
                     log(f"  ⚠ 自检（{d:%Y-%m-%d}）：{msg}")
         trend = build_trend(daily_hist, weekly_hist)
+        if spread_built:
+            add_coverage_alerts(trend, spread_built[0])
         folder = OUTPUT / "仓储" / f"{latest['dailystock']:%Y-%m-%d}"
         stamp = latest["dailystock"].strftime("%Y%m%d")
         md = folder / f"仓储趋势_{stamp}.md"
@@ -1373,9 +1429,8 @@ def run_stock(args) -> list[Path]:
         n_alert = sum(1 for p in trend["products"] if p["alerts"])
         log(f"  {len(daily_hist)} 个交易日 + {len(weekly_hist)} 周，{n_alert} 个品种有风险提示 → {md.relative_to(ROOT)}")
 
-    if SPREAD_SUMMARY.exists():
-        log("正在更新跨月价差参考……")
-        files, section = write_spread_outputs(latest["dailystock"], args.years)
+    if spread_built:
+        files, section = write_spread_outputs(latest["dailystock"], args.years, spread_built)
         made += files
         sections.insert(1 if args.history_days > 1 else 0, section)
     else:
