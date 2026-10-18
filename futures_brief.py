@@ -11,6 +11,8 @@
     python futures_brief.py news 铜 原油           # 这几个品种近 3 天的新闻列表
     python futures_brief.py news 铜 --days 7 --limit 30
     python futures_brief.py all 铜 原油            # 仓储 + 新闻一起
+    python futures_brief.py factors               # 影响因素：按 因素清单.json 搜新闻 + 近月−下月价差
+    python futures_brief.py page                  # 只重新拼网页（AI 写完解读后用）
 
 结果写到本文件旁边的 output/ 目录。
 """
@@ -1054,13 +1056,13 @@ def warrants_new(text: str) -> dict[str, tuple[float, str]]:
     return out
 
 
-def quotes_from_kx(text: str) -> dict[str, dict[str, list]]:
-    """每日行情：{代码: {交割月: [结算价, 持仓量, 成交量]}}，只要期货。"""
+def quotes_from_kx(text: str, codes=LOT_SIZE) -> dict[str, dict[str, list]]:
+    """每日行情：{代码: {交割月: [结算价, 持仓量, 成交量]}}，只要期货。codes=None 表示所有品种。"""
     out: dict[str, dict[str, list]] = {}
     for x in json.loads(text).get("o_curinstrument") or []:
         code = str(x.get("PRODUCTGROUPID", "")).strip()
         month = str(x.get("DELIVERYMONTH", "")).strip()
-        if code not in LOT_SIZE or not month.isdigit() or str(x.get("PRODUCTCLASS")) != "1":
+        if (codes is not None and code not in codes) or not code or not month.isdigit()                 or str(x.get("PRODUCTCLASS")) != "1":
             continue
         out.setdefault(code, {})[month] = [to_number(str(x.get(k, ""))) for k in
                                            ("SETTLEMENTPRICE", "OPENINTEREST", "VOLUME")]
@@ -1238,10 +1240,13 @@ def analyze_spread(code: str, rows: list[dict]) -> dict:
     return res
 
 
+PRICE_DECIMALS = {"au": 2, "sc": 1, "ec": 1}  # 报价带小数的品种（最小变动价位：黄金 0.02、原油 0.1、集运 0.1）
+
+
 def fmt_price(v: float | None, code: str, signed: bool = False) -> str:
     if v is None:
         return "—"
-    s = f"{v:{'+' if signed else ''}.{2 if code == 'au' else 0}f}"
+    s = f"{v:{'+' if signed else ''}.{PRICE_DECIMALS.get(code, 0)}f}"
     return s.lstrip("+-") if float(s) == 0 else s
 
 
@@ -1652,6 +1657,22 @@ td:has(.spark) {{ padding: 2px 6px; }}
 ul.alerts {{ padding-left: 18px; font-size: 13px; line-height: 1.7; }} ul.alerts ul {{ padding-left: 16px; }}
 .lvl {{ display: inline-block; min-width: 2.4em; text-align: center; border-radius: 4px; padding: 0 4px; font-size: 12px; color: #fff; }}
 .lvl-高 {{ background: #cf222e; }} .lvl-中 {{ background: #bf8700; }} .lvl-提示 {{ background: #6e7781; }}
+.tabs {{ display: flex; gap: 4px; border-bottom: 1px solid #d0d7de; margin-top: 12px; }}
+.tabs button {{ font: inherit; font-size: 15px; padding: 6px 18px; border: 1px solid transparent; border-bottom: none;
+  background: none; color: #57606a; cursor: pointer; border-radius: 6px 6px 0 0; margin-bottom: -1px; }}
+.tabs button.on {{ border-color: #d0d7de; background: #fff; color: #1f2328; font-weight: bold; }}
+table.wraptext td {{ white-space: normal; min-width: 4em; max-width: 36em; text-align: left; }}
+details.prod, details.factor {{ border: 1px solid #d0d7de; border-radius: 6px; margin: 8px 0; padding: 6px 12px; }}
+details.prod details.factor {{ border-color: #eaeef2; }}
+details > summary {{ cursor: pointer; font-weight: bold; }} details > summary small {{ color: #666; font-weight: normal; }}
+.mech {{ color: #57606a; font-size: 13px; background: #f6f8fa; padding: 6px 8px; border-radius: 4px; }}
+ol.news {{ font-size: 13px; line-height: 1.6; padding-left: 22px; }} .meta {{ color: #666; }}
+.snip {{ color: #57606a; font-size: 12px; }}
+.ai {{ border-left: 3px solid #8250df; background: #fbefff; padding: 6px 10px; margin: 8px 0; font-size: 13px; line-height: 1.7; }}
+.flag {{ color: #cf222e; font-weight: normal; }}
+.tag {{ display: inline-block; font-size: 12px; padding: 0 6px; border-radius: 4px; background: #8250df; color: #fff; }}
+.chips a {{ display: inline-block; margin: 2px 4px 2px 0; padding: 1px 10px; border: 1px solid #d0d7de;
+  border-radius: 12px; font-size: 13px; text-decoration: none; }}
 </style></head><body>
 <h1>上期所 / 上期能源 仓储速览</h1>
 <p class="note">生成时间 {now}。数字由脚本直接从交易所官网解析；变化红色为增加、绿色为减少。完整分仓库明细和历史数据见 output/仓储/日期/ 里的 CSV 文件。</p>
@@ -1783,9 +1804,8 @@ def run_stock(args) -> list[Path]:
     else:
         log("  （提示：运行一次 python futures_brief.py spread 可生成跨月价差参考，之后每次自动更新）")
 
-    page = OUTPUT / "仓储速览.html"
-    write_text(page, HTML_PAGE.format(date=f"{latest['dailystock']:%Y-%m-%d}",
-                                      now=f"{dt.datetime.now():%Y-%m-%d %H:%M}", sections="\n".join(sections)))
+    save_stock_part(f"{latest['dailystock']:%Y-%m-%d}", "\n".join(sections))
+    page = build_page("stock")
     made.append(page)
     log(f"  网页版 → {page.relative_to(ROOT)}")
     if args.open:
@@ -1807,12 +1827,12 @@ def run_spread(args) -> list[Path]:
 EM_SEARCH = "https://search-api-web.eastmoney.com/search/jsonp"
 
 
-def search_eastmoney(keyword: str, page_size: int) -> list[dict]:
+def search_eastmoney(keyword: str, page_size: int, page: int = 1) -> list[dict]:
     param = {
         "uid": "", "keyword": keyword, "type": ["cmsArticleWebOld"],
         "client": "web", "clientType": "web", "clientVersion": "curr",
         "param": {"cmsArticleWebOld": {"searchScope": "default", "sort": "time",
-                                       "pageIndex": 1, "pageSize": page_size, "preTag": "", "postTag": ""}},
+                                       "pageIndex": page, "pageSize": page_size, "preTag": "", "postTag": ""}},
     }
     url = EM_SEARCH + "?cb=cb&param=" + urllib.parse.quote(json.dumps(param, ensure_ascii=False))
     status, text = http_get(url, referer="https://so.eastmoney.com/")
@@ -1897,6 +1917,497 @@ def run_news(args) -> list[Path]:
     return made
 
 
+# ---------------------------------------------------------------- 影响因素
+
+FACTOR_LIST = ROOT / "因素清单.json"
+FACTOR_OUT = OUTPUT / "因素"
+FACTOR_LATEST = FACTOR_OUT / "最新数据.json"
+FACTOR_AI = FACTOR_OUT / "AI解读.json"            # AI 写：各品种的解读
+FACTOR_EVENTS = FACTOR_OUT / "长期事件.json"       # AI 写：持续几周到几个月的大事
+PAGE_STOCK_PART = CACHE / "页面片段_仓储.json"     # 仓储标签页的内容，拼网页时用
+FACTOR_SPREAD_DAYS = 20                            # 价差回看多少个交易日
+FACTOR_PAGES = 2                                   # 每个搜索词取几页新闻
+PUBLIC_KINDS = ("宏观", "政策", "地缘")             # 这几类因素影响面广，网页里单独放在「公共因素」
+FACTOR_EXPLAIN = [
+    "**价差** = 近月结算价 − 下月结算价。正数 = 近月比下月贵（反向结构，常说明眼前的货紧）；"
+    "负数 = 近月比下月便宜（正向结构，常见于货充足、或囤货成本高的时候）。",
+    "**近月 / 下月**：当前月份之后第一个 / 第二个挂牌的合约（如 10 月份时多数品种是 2611 / 2612；"
+    "天然橡胶没有 12 月合约，是 2611 / 2701）。回看期内一直用今天这两个合约比较，不换月。",
+    "**通常怎么影响价差**：行业里常见的说法，未经验证，不同时期可能不灵。",
+    "新闻按「因素清单.json」里的搜索词搜，再要求标题里有「必含」词，仍可能有不相关的条目。",
+]
+
+
+def load_factor_list() -> tuple[dict[str, str], list[dict]]:
+    """读 因素清单.json，返回（{代码: 品种名}, 因素列表）。"""
+    try:
+        cfg = json.loads(FACTOR_LIST.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise RuntimeError(f"找不到 {FACTOR_LIST.name}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"{FACTOR_LIST.name} 格式有误（第 {e.lineno} 行）：{e.msg}")
+    names = {k.lower(): v for k, v in (cfg.get("品种") or {}).items()}
+    factors = []
+    for i, f in enumerate(cfg.get("因素") or []):
+        codes = list(names) if f.get("品种") == "全部" else [c.lower() for c in f.get("品种") or []]
+        unknown = [c for c in codes if c not in names]
+        if unknown:
+            raise RuntimeError(f"{FACTOR_LIST.name}：「{f.get('名称')}」里的 {'、'.join(unknown)} 不在「品种」列表里")
+        if not f.get("名称") or not f.get("搜索词"):
+            raise RuntimeError(f"{FACTOR_LIST.name}：第 {i + 1} 个因素缺少「名称」或「搜索词」")
+        factors.append({**f, "品种": codes, "id": f"k{i + 1}"})
+    return names, factors
+
+
+def resolve_factor_codes(typed: list[str], names: dict[str, str]) -> list[str]:
+    if not typed:
+        return list(names)
+    by_name = {v: k for k, v in names.items()}
+    out = []
+    for t in typed:
+        c = t.lower()
+        if c not in names:
+            c = by_name.get(t) or PRODUCT_CODES.get(PRODUCT_ALIASES.get(t, t), "")
+        if c not in names:
+            raise RuntimeError(f"因素清单里没有「{t}」。可以写代码（如 cu、sc）或中文名（如 铜、原油）")
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def news_matches(it: dict, groups: list[list[str]], exclude: list[str]) -> bool:
+    """「必含」：每一组里至少有一个词出现在标题里（摘要常是整篇正文的开头，什么词都可能有，不看）；
+    「排除」：标题里有这些词就不要。"""
+    text = it["title"].lower()
+    return all(any(w.lower() in text for w in g) for g in groups) and not any(w.lower() in text for w in exclude)
+
+
+def collect_factor_news(factors: list[dict], days: int, limit: int) -> list[str]:
+    """给每个因素填上「新闻」；返回失败的搜索。"""
+    since = dt.datetime.now() - dt.timedelta(days=days)
+    queries = sorted({q for f in factors for q in f["搜索词"]})
+    log(f"正在按 {len(factors)} 个因素搜索新闻（共 {len(queries)} 个搜索词）……")
+    results, errors = {}, []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        # 每个搜索词取前 FACTOR_PAGES 页（每页 50 条）：热门话题一天就有几十条
+        jobs = {pool.submit(search_eastmoney, q, 50, page): q for q in queries for page in range(1, FACTOR_PAGES + 1)}
+        for job in as_completed(jobs):
+            q = jobs[job]
+            try:
+                results.setdefault(q, []).extend(job.result())
+            except (RuntimeError, ValueError) as e:
+                errors.append(f"{q}（{e}）")
+    errors = sorted(set(errors))
+    if queries and not results:
+        raise RuntimeError("新闻搜索全部失败：" + errors[0])
+    for f in factors:
+        seen_url, seen_title, items = set(), set(), []
+        for q in f["搜索词"]:
+            for it in results.get(q, []):
+                try:
+                    t = dt.datetime.strptime(it["time"][:19], "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    continue
+                title_key = re.sub(r"\W", "", it["title"])
+                if t < since or not news_matches(it, f.get("必含") or [], f.get("排除") or []) \
+                        or it["url"] in seen_url or title_key in seen_title:
+                    continue
+                seen_url.add(it["url"])
+                seen_title.add(title_key)
+                items.append(it)
+        items.sort(key=lambda x: x["time"], reverse=True)
+        f["命中"] = len(items)
+        f["新闻"] = items[:limit]
+    return sorted(errors)
+
+
+def kx_quotes(d: dt.date) -> dict | None:
+    ds = d.strftime("%Y%m%d")
+    text = fetch_gz(SHFE_KX_URL.format(date=ds), HISTORY_DIR / f"kx_{ds}.dat.gz", lambda t: "o_curinstrument" in t)
+    return quotes_from_kx(text, None) if text else None
+
+
+def factor_spreads(codes: list[str], names: dict[str, str]) -> tuple[dict, str, list[str]]:
+    """每个品种近月 − 下月价差和近 FACTOR_SPREAD_DAYS 个交易日的变化。返回（{代码: 结果}, 数据日期, 警告）。"""
+    log(f"正在整理近 {FACTOR_SPREAD_DAYS} 个交易日的近月 − 下月价差……")
+    days, warns = [], []
+    d, misses = dt.date.today(), 0
+    while len(days) < FACTOR_SPREAD_DAYS + 1 and misses < 15:  # 多取 1 天，才算得出「20 日变化」
+        if is_trading_day(d):
+            try:
+                q = kx_quotes(d)
+            except RuntimeError as e:
+                warns.append(f"行情下载失败：{e}")
+                break
+            if q:
+                days.append((d, q))
+                misses = 0
+            else:
+                misses += 1
+        d -= dt.timedelta(days=1)
+    if not days:
+        return {}, "", warns + ["近期行情一份都没取到，价差无数据"]
+    days.reverse()
+    latest, lq = days[-1]
+    this_month = month_code(latest, 0)
+    out = {}
+    for code in codes:
+        months = sorted(m for m in lq.get(code, {}) if m > this_month)
+        near, far = (months + [None, None])[:2]
+        r = {"code": code, "name": names[code], "near": near, "far": far}
+        qn, qf = lq.get(code, {}).get(near), lq.get(code, {}).get(far)
+        if not (qn and qf and qn[0] and qf[0]):
+            r["status"] = "none"
+            out[code] = r
+            continue
+        series = []
+        for day, q in days:
+            a, b = q.get(code, {}).get(near), q.get(code, {}).get(far)
+            if a and b and a[0] and b[0]:
+                series.append((day.strftime("%Y-%m-%d"), round(a[0] - b[0], 4)))
+        spread = round(qn[0] - qf[0], 4)
+        r.update(status="ok", near_settle=qn[0], far_settle=qf[0], spread=spread,
+                 spread_pct=round(spread / qf[0] * 100, 3), near_oi=qn[1], near_vol=qn[2], far_vol=qf[2],
+                 series=series, chg5=round(spread - series[-6][1], 4) if len(series) >= 6 else None,
+                 chg_n=round(spread - series[0][1], 4) if len(series) >= 2 else None, n=len(series) - 1,
+                 notes=["成交少，价差可能失真"] if min(qn[2] or 0, qf[2] or 0) < SPREAD_RULES["成交少"] else [])
+        out[code] = r
+    return out, latest.strftime("%Y-%m-%d"), warns
+
+
+def structure_text(spread: float) -> str:
+    return "近月贵（反向）" if spread > 0 else "近月便宜（正向）" if spread < 0 else "持平"
+
+
+def spread_cells(r: dict) -> list[str]:
+    """价差总览一行：近月、下月、近月结算、下月结算、价差、结构、5日变化、N日变化、备注。"""
+    c = r["code"]
+    if r.get("status") != "ok":
+        return [r.get("near") or "none", r.get("far") or "none", "—", "—", "none", "—", "—", "—", "近月或下月合约不存在"]
+    return [r["near"], r["far"], fmt_price(r["near_settle"], c), fmt_price(r["far_settle"], c),
+            f"{fmt_price(r['spread'], c, True)}（{r['spread_pct']:+.2f}%）", structure_text(r["spread"]),
+            fmt_price(r["chg5"], c, True), fmt_price(r["chg_n"], c, True), "；".join(r["notes"]) or ""]
+
+
+def factor_spread_heads(n: int) -> list[str]:
+    return ["品种", "代码", "近月", "下月", "近月结算", "下月结算", "价差（占下月价格）", "结构", "5日变化",
+            f"{n}日变化", "备注"]
+
+
+def news_line(it: dict) -> str:
+    return f"【{it['time'][5:16]} {it['source'] or '—'}】{it['title']}"
+
+
+def factors_to_markdown(data: dict) -> str:
+    names, spreads, factors = data["品种"], data["价差"], data["因素"]
+    n = max((r.get("n") or 0 for r in spreads.values()), default=0)
+    lines = [f"# 影响因素原始资料（{data['生成时间']} 生成）", "",
+             f"- 新闻：近 {data['天数']} 天，东方财富资讯搜索；按「因素清单.json」的搜索词搜、要求标题里有「必含」词，"
+             f"每个因素最多 {data['每因素条数']} 条，按时间倒序。没经过 AI 筛选，可能有不相关的。",
+             f"- 价差：数据日期 {data['价差日期'] or '无数据'}，上期所 / 上期能源每日行情（结算价）。",
+             *[f"- {t}" for t in FACTOR_EXPLAIN], ""]
+    for w in data["警告"]:
+        lines.append(f"> ⚠ {w}")
+    if data["警告"]:
+        lines.append("")
+    lines += ["## 近月 − 下月价差", "", "| " + " | ".join(factor_spread_heads(n)) + " |",
+              "|" + "---|" * len(factor_spread_heads(n))]
+    for c in names:
+        if c in spreads:
+            lines.append(f"| {names[c]} | {c} | " + " | ".join(spread_cells(spreads[c])) + " |")
+    lines.append("")
+
+    def factor_block(f: dict, level: str) -> list[str]:
+        codes = [c for c in f["品种"] if c in names]
+        out = [f"{level} {f['名称']}（{f.get('类别', '')}；影响：{'、'.join(f'{names[c]} {c}' for c in codes)}）", "",
+               f"通常怎么影响价差（常见说法，未经验证）：{f.get('通常怎么影响价差', '—')}", ""]
+        if not f["新闻"]:
+            out += [f"近 {data['天数']} 天无相关新闻。", ""]
+        for i, it in enumerate(f["新闻"], 1):
+            snippet = it["snippet"][:140] + ("…" if len(it["snippet"]) > 140 else "")
+            out += [f"{i}. {news_line(it)}", f"   - 链接：{it['url']}", f"   - 摘要：{snippet or '—'}"]
+        return out + [""]
+
+    public = [f for f in factors if f.get("类别") in PUBLIC_KINDS]
+    if public:
+        lines += ["## 公共因素（宏观、政策、地缘）", ""]
+        for f in public:
+            lines += factor_block(f, "###")
+    for c in names:
+        own = [f for f in factors if c in f["品种"] and f.get("类别") not in PUBLIC_KINDS]
+        pub = [f["名称"] for f in public if c in f["品种"]]
+        lines += [f"## {names[c]} {c}", ""]
+        r = spreads.get(c)
+        if r and r.get("status") == "ok":
+            lines.append(f"价差：{c}{r['near']} − {c}{r['far']} = {fmt_price(r['spread'], c, True)}"
+                         f"，{structure_text(r['spread'])}，5 日变化 {fmt_price(r['chg5'], c, True)}，"
+                         f"{r['n']} 日变化 {fmt_price(r['chg_n'], c, True)}"
+                         + (f"；{'；'.join(r['notes'])}" if r["notes"] else ""))
+        else:
+            lines.append("价差：none（近月或下月合约不存在）")
+        lines += [f"相关公共因素：{'、'.join(pub) or '无'}（见上方）", ""]
+        for f in own:
+            lines += factor_block(f, "###")
+    return "\n".join(lines)
+
+
+def load_ai_file(path: Path) -> tuple[dict | None, str]:
+    """读 AI 写的 JSON；格式不对时返回错误说明，不让整个网页挂掉。"""
+    if not path.exists():
+        return None, ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("最外层应该是 { }")
+        return data, ""
+    except (json.JSONDecodeError, ValueError) as e:
+        return None, f"{path.name} 格式有误，没有显示：{e}"
+
+
+def safe_link(url, text: str) -> str:
+    url = str(url or "")
+    if not re.match(r"https?://", url):
+        return html.escape(text)
+    return f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener">{html.escape(text)}</a>'
+
+
+def news_list_html(items: list[dict], days: int) -> str:
+    if not items:
+        return f'<p class="note">近 {days} 天无相关新闻。</p>'
+    lis = []
+    for it in items:
+        snippet = it["snippet"][:120] + ("…" if len(it["snippet"]) > 120 else "")
+        lis.append(f'<li><span class="meta">{html.escape(it["time"][5:16])} {html.escape(it["source"] or "—")}</span> '
+                   f'{safe_link(it["url"], it["title"])}<br><span class="snip">{html.escape(snippet)}</span></li>')
+    return f'<ol class="news">{"".join(lis)}</ol>'
+
+
+def factor_html(f: dict, names: dict, days: int, open_: bool = False) -> str:
+    codes = "、".join(f"{names[c]}" for c in f["品种"] if c in names)
+    more = f"，共 {f['命中']} 条，显示最新 {len(f['新闻'])} 条" if f["命中"] > len(f["新闻"]) else ""
+    return (f'<details class="factor" id="{f["id"]}"{" open" if open_ else ""}><summary>{html.escape(f["名称"])} '
+            f'<small>{html.escape(f.get("类别", ""))} · {len(f["新闻"])} 条新闻{more}</small></summary>'
+            f'<p class="note">影响：{html.escape(codes)}</p>'
+            f'<p class="mech">通常怎么影响价差（常见说法，未经验证）：{html.escape(f.get("通常怎么影响价差", "—"))}</p>'
+            f'{news_list_html(f["新闻"], days)}</details>')
+
+
+def ai_block_html(entry: dict, known_urls: set[str]) -> str:
+    """known_urls：脚本这次抓到的新闻链接。AI 引用的链接不在里面、又没标「补充搜索」，就标 ⚠ 提醒核对。"""
+    if not isinstance(entry, dict):
+        return ""
+    parts = ['<div class="ai"><span class="tag">AI 解读</span> ']
+    if entry.get("小结"):
+        parts.append(f'<b>{html.escape(str(entry["小结"]))}</b>')
+    items = entry.get("条目") or []
+    if items:
+        parts.append("<ul>")
+        for it in items if isinstance(items, list) else []:
+            if not isinstance(it, dict):
+                continue
+            src = " ".join(str(it.get(k, "")) for k in ("时间", "来源")).strip()
+            link = safe_link(it.get("链接"), "原文") if it.get("链接") else ""  # 引用仓储数据时没有链接
+            if it.get("链接") and str(it["链接"]) not in known_urls and "补充搜索" not in str(it):
+                link += ' <b class="flag">⚠ 这个链接不在脚本抓到的新闻里，请核对</b>'
+            parts.append(f'<li><b>{html.escape(str(it.get("因素", "")))}</b>：{html.escape(str(it.get("事实", "")))}'
+                         f' <span class="meta">（{html.escape(src)}{"，" + link if link else ""}）</span>'
+                         f'<br>→ 对价差：{html.escape(str(it.get("对价差", "")))}</li>')
+        parts.append("</ul>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def events_html(events: dict | None, names: dict) -> str:
+    rows = (events or {}).get("事件") or []
+    if not rows:
+        return ('<p class="note">还没有记录长期事件。对 AI 说「更新影响因素」，它会把伊朗局势这类持续几周以上的大事记在这里。</p>')
+    out = ['<div class="wrap"><table class="wraptext"><thead><tr><th>事件</th><th>状态</th><th>影响品种</th>'
+           '<th>最新进展</th><th>开始</th><th>更新</th><th>链接</th></tr></thead><tbody>']
+    order = {"进行中": 0, "缓和": 1, "已结束": 2}
+    for e in sorted((e for e in rows if isinstance(e, dict)), key=lambda e: order.get(e.get("状态"), 1)):
+        codes = "、".join(names.get(str(c).lower(), str(c)) for c in e.get("影响品种") or [])
+        links = " ".join(safe_link(l.get("链接"), l.get("标题") or "原文") for l in e.get("链接") or []
+                         if isinstance(l, dict))
+        out.append(f'<tr><td>{html.escape(str(e.get("名称", "")))}</td><td>{html.escape(str(e.get("状态", "")))}</td>'
+                   f'<td>{html.escape(codes)}</td><td>{html.escape(str(e.get("最新进展", "")))}</td>'
+                   f'<td>{html.escape(str(e.get("开始", "")))}</td><td>{html.escape(str(e.get("更新日期", "")))}</td>'
+                   f'<td>{links}</td></tr>')
+    out.append("</tbody></table></div>")
+    return "".join(out)
+
+
+def factors_to_html() -> str:
+    if not FACTOR_LATEST.exists():
+        return ('<section><h2>影响因素</h2><p>还没有数据。双击「一键更新数据.bat」，'
+                '或运行 <code>python futures_brief.py factors</code>。</p></section>')
+    data = json.loads(FACTOR_LATEST.read_text(encoding="utf-8"))
+    names, spreads, factors, days = data["品种"], data["价差"], data["因素"], data["天数"]
+    ai, ai_err = load_ai_file(FACTOR_AI)
+    events, ev_err = load_ai_file(FACTOR_EVENTS)
+    n = max((r.get("n") or 0 for r in spreads.values()), default=0)
+    parts = [f'<section><h2>影响因素 <small>新闻 {html.escape(data["生成时间"])} 更新（近 {days} 天）· '
+             f'价差数据 {html.escape(data["价差日期"] or "无")}</small></h2>',
+             '<p class="note">' + "<br>".join(html.escape(t.replace("**", "")) for t in FACTOR_EXPLAIN) +
+             "<br>新闻和价差由脚本获取；紫色「AI 解读」由 AI 写，只讲机制，不构成买卖建议。</p>"]
+    for w in data["警告"] + [e for e in (ai_err, ev_err) if e]:
+        parts.append(f'<p class="warn">⚠ {html.escape(w)}</p>')
+    ai_products = (ai or {}).get("品种") or {}
+    known_urls = {it["url"] for f in factors for it in f["新闻"]}
+    if ai:
+        stamp = str(ai.get("更新时间", ""))
+        stale = stamp[:16] < data["生成时间"][:16]
+        parts.append(f'<p class="note"><span class="tag">AI 解读</span> 更新于 {html.escape(stamp or "（未写时间）")}'
+                     + ("，<b>早于上面的新闻，可能已过时</b>；对 AI 说「更新影响因素」可以刷新。" if stale else "。")
+                     + "</p>")
+    else:
+        parts.append('<p class="note">还没有 AI 解读。对 AI 说「更新影响因素」，它会筛选新闻并写出每个品种的价差解读。</p>')
+
+    if ai_products:
+        summary = lambda e: str(e.get("小结", "")) if isinstance(e, dict) else ""
+        rows = "".join(f'<tr><td><a href="#f-{c}">{html.escape(names[c])}</a></td><td>{c}</td>'
+                       f'<td>{html.escape(summary(ai_products[c]))}</td></tr>' for c in names if c in ai_products)
+        missing = [names[c] for c in names if c not in ai_products]
+        parts.append("<h3>AI 解读一览 <small>点品种名看详细条目</small></h3><div class='wrap'><table class='wraptext'>"
+                     f"<thead><tr><th>品种</th><th>代码</th><th>小结</th></tr></thead><tbody>{rows}</tbody></table></div>"
+                     + (f'<p class="note">没有 AI 解读的品种：{html.escape("、".join(missing))}</p>' if missing else ""))
+
+    parts += ["<h3>长期事件 <small>（AI 维护）</small></h3>", events_html(events, names)]
+
+    parts.append(f"<h3>近月 − 下月价差</h3><div class='wrap'><table><thead><tr>"
+                 + "".join(f"<th>{h}</th>" for h in factor_spread_heads(n)[:10])
+                 + f"<th>近 {n} 日走势</th>" + "".join(f"<th>{h}</th>" for h in factor_spread_heads(n)[10:])
+                 + "</tr></thead><tbody>")
+    for c in names:
+        if c not in spreads:
+            continue
+        r, cells = spreads[c], spread_cells(spreads[c])
+        chg = lambda v: "" if not v else (' class="up"' if v > 0 else ' class="down"')
+        spark = sparkline([(parse_date(d), v) for d, v in r.get("series", [])], "价差") if r.get("series") else ""
+        parts.append(f'<tr><td><a href="#f-{c}">{html.escape(names[c])}</a></td><td>{c}</td>'
+                     + "".join(f"<td>{html.escape(x)}</td>" for x in cells[:6])
+                     + f'<td{chg(r.get("chg5"))}>{cells[6]}</td><td{chg(r.get("chg_n"))}>{cells[7]}</td>'
+                     + f"<td>{spark}</td><td>{html.escape(cells[8])}</td></tr>")
+    parts.append("</tbody></table></div>"
+                 '<p class="note">变化：红色 = 价差变大（近月相对走强），绿色 = 价差变小（近月相对走弱）。</p>')
+
+    public = [f for f in factors if f.get("类别") in PUBLIC_KINDS]
+    if public:
+        parts.append("<h3>公共因素 <small>宏观、政策、地缘：影响多个品种</small></h3>")
+        parts += [factor_html(f, names, days) for f in public]
+
+    parts.append("<h3>各品种</h3><p class='chips'>" + "".join(
+        f'<a href="#f-{c}">{html.escape(names[c])}{" ✦" if c in ai_products else ""}</a>' for c in names) +
+        "</p><p class='note'>✦ = 有 AI 解读。点品种名展开。</p>")
+    for c in names:
+        own = [f for f in factors if c in f["品种"] and f.get("类别") not in PUBLIC_KINDS]
+        pub = [f for f in public if c in f["品种"]]
+        r = spreads.get(c) or {}
+        head = (f"价差 {fmt_price(r['spread'], c, True)}，{structure_text(r['spread'])}" if r.get("status") == "ok"
+                else "价差 none")
+        n_news = sum(len(f["新闻"]) for f in own)
+        parts.append(f'<details class="prod" id="f-{c}"><summary>{html.escape(names[c])} {c} '
+                     f'<small>{head} · 专属因素新闻 {n_news} 条{" · ✦ AI 解读" if c in ai_products else ""}</small>'
+                     f'</summary>{ai_block_html(ai_products.get(c), known_urls)}')
+        if pub:
+            parts.append('<p class="note">相关公共因素：' + "、".join(
+                f'<a href="#{f["id"]}">{html.escape(f["名称"])}</a>（{len(f["新闻"])} 条）' for f in pub) + "</p>")
+        parts += [factor_html(f, names, days) for f in own]
+        parts.append("</details>")
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+TABS_HTML = """<nav class="tabs"><button data-tab="stock">仓储</button><button data-tab="factors">影响因素</button></nav>
+<div class="tab" id="tab-stock">{stock}</div>
+<div class="tab" id="tab-factors" hidden>{factors}</div>
+<script>
+(function () {{
+  var DEFAULT = "{default}";
+  function show(name) {{
+    document.querySelectorAll(".tab").forEach(function (t) {{ t.hidden = t.id !== "tab-" + name; }});
+    document.querySelectorAll(".tabs button").forEach(function (b) {{ b.classList.toggle("on", b.dataset.tab === name); }});
+  }}
+  function fromHash() {{
+    var h = decodeURIComponent(location.hash.slice(1));
+    var el = h && document.getElementById(h);
+    if (el && el.closest("#tab-factors")) {{
+      show("factors");
+      for (var d = el; d; d = d.parentElement) if (d.tagName === "DETAILS") d.open = true;
+      el.scrollIntoView();
+    }} else show(h === "stock" || h === "factors" ? h : DEFAULT);
+  }}
+  document.querySelectorAll(".tabs button").forEach(function (b) {{
+    b.onclick = function () {{ history.replaceState(null, "", "#" + b.dataset.tab); show(b.dataset.tab); }};
+  }});
+  window.addEventListener("hashchange", fromHash);
+  fromHash();
+}})();
+</script>"""
+
+
+def save_stock_part(date: str, sections: str) -> None:
+    write_text(PAGE_STOCK_PART, json.dumps({"date": date, "now": f"{dt.datetime.now():%Y-%m-%d %H:%M}",
+                                            "sections": sections}, ensure_ascii=False))
+
+
+def build_page(default_tab: str) -> Path:
+    """把仓储和影响因素两个标签页拼成 output/仓储速览.html。两部分各自更新，互不覆盖。"""
+    part = json.loads(PAGE_STOCK_PART.read_text(encoding="utf-8")) if PAGE_STOCK_PART.exists() else None
+    stock = part["sections"] if part else ('<section><p>还没有仓储数据。双击「一键更新数据.bat」，'
+                                           '或运行 <code>python futures_brief.py stock</code>。</p></section>')
+    page = OUTPUT / "仓储速览.html"
+    write_text(page, HTML_PAGE.format(
+        date=part["date"] if part else "", now=part["now"] if part else "（仓储数据还没获取）",
+        sections=TABS_HTML.format(stock=stock, factors=factors_to_html(), default=default_tab)))
+    return page
+
+
+def run_factors(args) -> list[Path]:
+    names, factors = load_factor_list()
+    codes = resolve_factor_codes(args.products, names)
+    factors = [f for f in factors if any(c in codes for c in f["品种"])]
+    for f in factors:
+        f["品种"] = [c for c in f["品种"] if c in codes]
+    errors = collect_factor_news(factors, args.days, args.limit)
+    spreads, spread_date, warns = factor_spreads(codes, names)
+    if errors:
+        warns.append(f"有 {len(errors)} 个搜索词失败：{'、'.join(errors)}")
+    now = dt.datetime.now()
+    data = {"生成时间": f"{now:%Y-%m-%d %H:%M}", "天数": args.days, "每因素条数": args.limit,
+            "价差日期": spread_date, "品种": {c: names[c] for c in codes}, "价差": spreads,
+            "因素": [{k: f[k] for k in ("id", "名称", "类别", "品种", "通常怎么影响价差", "搜索词", "命中", "新闻")
+                     if k in f} for f in factors],
+            "警告": warns}
+    folder = FACTOR_OUT / f"{now:%Y-%m-%d}"
+    md = folder / f"影响因素_{now:%Y%m%d}.md"
+    write_text(md, factors_to_markdown(data))
+    raw = json.dumps(data, ensure_ascii=False, indent=1)
+    write_text(folder / f"影响因素_{now:%Y%m%d}.json", raw)
+    write_text(FACTOR_LATEST, raw)
+    for w in warns:
+        log(f"  ⚠ {w}")
+    hit = sum(1 for f in factors if f["新闻"])
+    log(f"  {len(factors)} 个因素里 {hit} 个有近 {args.days} 天的新闻 → {md.relative_to(ROOT)}")
+    page = build_page("factors")
+    log(f"  网页版 → {page.relative_to(ROOT)}（「影响因素」标签页）")
+    if args.open:
+        webbrowser.open(page.as_uri())
+    return [md, page]
+
+
+def run_page(args) -> list[Path]:
+    page = build_page("factors")
+    _, err = load_ai_file(FACTOR_AI)
+    _, err2 = load_ai_file(FACTOR_EVENTS)
+    for e in (err, err2):
+        if e:
+            log(f"  ⚠ {e}")
+    log(f"  网页版 → {page.relative_to(ROOT)}")
+    if args.open:
+        webbrowser.open(page.as_uri())
+    return [page]
+
+
 # ---------------------------------------------------------------- 入口
 
 def main() -> int:
@@ -1931,6 +2442,13 @@ def main() -> int:
     p.add_argument("--start", help="开始日期，如 20250101（写了就不看 --days）")
     p.add_argument("--end", help="结束日期，如 20251231；默认今天，自动往前找最近有数据的一天")
     p.add_argument("--open", action="store_true", help="完成后用浏览器打开网页版")
+    p = sub.add_parser("factors", help="影响因素：按因素清单搜新闻 + 各品种近月−下月价差")
+    p.add_argument("products", nargs="*", help="可选：只看这几个品种（默认清单里全部品种）")
+    p.add_argument("--days", type=int, default=7, help="只要最近几天的新闻（默认 7）")
+    p.add_argument("--limit", type=int, default=6, help="每个因素最多几条（默认 6）")
+    p.add_argument("--open", action="store_true", help="完成后用浏览器打开网页版")
+    p = sub.add_parser("page", help="只重新拼网页（AI 改完 AI解读.json / 长期事件.json 后用）")
+    p.add_argument("--open", action="store_true", help="完成后用浏览器打开网页版")
     p = sub.add_parser("all", help="仓储 + 新闻")
     p.add_argument("products", nargs="+", help="品种，如 铜 原油")
     add_stock_opts(p)
@@ -1947,6 +2465,10 @@ def main() -> int:
             made += run_history(args)
         if args.cmd in ("news", "all"):
             made += run_news(args)
+        if args.cmd == "factors":
+            made += run_factors(args)
+        if args.cmd == "page":
+            made += run_page(args)
     except RuntimeError as e:
         log(f"出错了：{e}")
         return 1
