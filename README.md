@@ -8,6 +8,9 @@
 浏览器会打开汇总网页：最上面是风险提示（【高】【中】【提示】三级），然后是每个品种的走势小图，鼠标放在线上的点可以看日期和数值。完整的分仓库明细和历史数据在 `output/仓储/日期/` 里的 CSV 文件，用 Excel 打开就行。全程不经过 AI，也不花钱。
 第一次运行要下载约 30 份历史报表，大约一两分钟；以后只下载新的，几秒就好。
 
+**查某个品种的历史：双击 `查询品种历史.bat`**
+输入品种代码（如 al、cu，或中文名「铝」）和往前看多少天（直接回车 = 365 天），浏览器会打开这个品种的走势图：仓单、库存小计、后备货、可用库容，以及起点、终点、区间最高最低。逐日 / 逐周明细在 `output/历史查询/` 里的 .md 和 CSV。数据最早能查到 2015 年；第一次查很长的时间段要下载一会儿，下载过的会存下来。
+
 **2. 仓储数据 + 新闻速览：让任意 AI 助手来做**
 在这个文件夹里打开任意 AI 助手（Claude Code、Codex、Cursor 等，用便宜的模型也行），对它说：
 
@@ -23,6 +26,8 @@ python futures_brief.py stock              仓单日报 + 库存周报
 python futures_brief.py stock cu au        另外列出铜、黄金的分仓库明细和逐日数据
 python futures_brief.py stock --history-days 60   回看 60 个交易日
 python futures_brief.py spread             跨月价差参考（第一次下载约 3 年数据，之后自动更新）
+python futures_brief.py history al --days 365                  铝过去 365 天的日报 + 周报
+python futures_brief.py history 铝 铜 --start 20250101 --end 20251231   指定起止日期
 python futures_brief.py news 铜 原油        近 3 天新闻列表
 python futures_brief.py all 铜 原油         两样都要
 ```
@@ -42,6 +47,7 @@ python futures_brief.py all 铜 原油         两样都要
 |---|---|
 | `futures_brief.py` | 取数据的程序，只用 Python 自带功能，不用安装别的东西 |
 | `一键获取仓储数据.bat` | 双击运行的"按钮" |
+| `查询品种历史.bat` | 双击后输入代码和天数，查某个品种过去的日报和周报 |
 | `AGENTS.md` | 给 AI 助手看的操作说明 |
 | `CLAUDE.md`、`.claude/` | 让 Claude Code 也能读到上面的说明，并提供 `/futures-brief` 命令 |
 | `output/` | 所有结果；`output/缓存/` 存下载过的历史报表 |

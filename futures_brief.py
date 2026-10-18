@@ -213,6 +213,9 @@ def _expand(rows: list[dict]) -> list[list[str]]:
     return grid
 
 
+SEP = "·"  # 两层表头拼成一个列名时用的分隔符，如「本周库存·小计」（不是减号）
+
+
 def _header_names(head_rows: list[dict]) -> list[str]:
     grid = _expand(head_rows)
     if not grid:
@@ -224,7 +227,7 @@ def _header_names(head_rows: list[dict]) -> list[str]:
         for r in grid:
             if c < len(r) and r[c] and (not parts or parts[-1] != r[c]):
                 parts.append(r[c])
-        names.append("-".join(parts))
+        names.append(SEP.join(parts))
     return names
 
 
@@ -426,7 +429,7 @@ BACKUP_COLS = ("本周后备货（小计−期货）", "后备货周变化")
 
 
 def has_backup(cols) -> bool:
-    return "本周库存-小计" in cols and "本周库存-期货" in cols
+    return f"本周库存{SEP}小计" in cols and f"本周库存{SEP}期货" in cols
 
 
 def fmt_signed(v: float | None) -> str:
@@ -437,14 +440,58 @@ def change_class(n: float | None) -> str:
     return "" if not n else (' class="up"' if n > 0 else ' class="down"')
 
 
-def backup_texts(r: dict) -> list[str]:
+def pct_of_change(chg: float | None, cur: float | None) -> str:
+    """涨跌幅 = 增减 ÷ 上一期数量（上一期 = 本期 − 增减）。"""
+    if chg is None or cur is None:
+        return "—"
+    prev = cur - chg
+    if prev == 0:
+        return "—" if chg == 0 else "从 0 新增"
+    return fmt_pct(chg / prev * 100)
+
+
+def change_base(cols, c: str) -> str | None:
+    """「增减」列对应的本期数量列，用来算涨跌幅。"""
+    if c == "增减":
+        return first_col(list(cols), ["期货", "本日数量", "本周期货"])
+    cand = c.replace("库存增减", "本周库存").replace(SEP + "增减", SEP + "本周")
+    return cand if cand in cols else None
+
+
+def backup_cells(r: dict) -> list[tuple[str, float | None]]:
     """本周后备货 = 本周库存小计 − 本周期货；周变化 = 本周后备货 − 上周后备货。"""
-    s, w = to_number(r.get("本周库存-小计", "")), to_number(r.get("本周库存-期货", ""))
+    s, w = to_number(r.get(f"本周库存{SEP}小计", "")), to_number(r.get(f"本周库存{SEP}期货", ""))
     if s is None or w is None:
-        return ["—", "—"]
-    ps, pw = to_number(r.get("上周库存-小计", "")), to_number(r.get("上周库存-期货", ""))
+        return [("—", None), ("—", None)]
+    ps, pw = to_number(r.get(f"上周库存{SEP}小计", "")), to_number(r.get(f"上周库存{SEP}期货", ""))
     chg = None if ps is None or pw is None else (s - w) - (ps - pw)
-    return [fmt_number(s - w), fmt_signed(chg)]
+    txt = fmt_signed(chg) if chg is None else f"{fmt_signed(chg)}（{pct_of_change(chg, s - w)}）"
+    return [(fmt_number(s - w), None), (txt, chg)]
+
+
+def summary_cells(kind: str, cols, r: dict) -> tuple[list[str], list[tuple[str, float | None]]]:
+    """汇总表一行：列名 + 每格（显示文字, 用来上色的增减数）。
+    日报在每个「增减」后面加一列「涨跌幅」；周报把百分比写在增减数后面的括号里；周报再补两列后备货。"""
+    heads: list[str] = []
+    cells: list[tuple[str, float | None]] = []
+    for c in cols:
+        v = r.get(c, "")
+        heads.append(c)
+        if "增减" not in c:
+            cells.append((v, None))
+            continue
+        n = to_number(v)
+        base = change_base(cols, c)
+        p = pct_of_change(n, to_number(r.get(base, ""))) if base else "—"
+        if kind == "dailystock":
+            cells += [(v, n), (p, n)]
+            heads.append("涨跌幅")
+        else:
+            cells.append((f"{v}（{p}）" if v and p != "—" else v, n))
+    if kind == "weeklystock" and has_backup(cols):
+        heads += list(BACKUP_COLS)
+        cells += backup_cells(r)
+    return heads, cells
 
 
 def stock_to_markdown(kind: str, day: dt.date, url: str, parsed: dict, wanted: list[str],
@@ -477,11 +524,11 @@ def stock_to_markdown(kind: str, day: dt.date, url: str, parsed: dict, wanted: l
             continue
         lines += [f"## {exchange}：各品种汇总", ""]
         for cols, items in summary_groups(tables):
-            extra = list(BACKUP_COLS) if has_backup(cols) else []
-            lines.append("| 品种 | 代码 | 单位 | 汇总行 | " + " | ".join(list(cols) + extra) + " |")
-            lines.append("|" + "---|" * (4 + len(cols) + len(extra)))
+            heads = summary_cells(kind, cols, items[0][1])[0]
+            lines.append("| 品种 | 代码 | 单位 | 汇总行 | " + " | ".join(heads) + " |")
+            lines.append("|" + "---|" * (4 + len(heads)))
             for t, r in items:
-                vals = [r.get(c, "") for c in cols] + (backup_texts(r) if extra else [])
+                vals = [x for x, _ in summary_cells(kind, cols, r)[1]]
                 lines.append(f"| {t['product']} | {t['code']} | {t['unit']} | {row_label(t, r)} | "
                              + " | ".join(vals) + " |")
             lines.append("")
@@ -541,24 +588,13 @@ def stock_to_html_section(kind: str, day: dt.date, url: str, parsed: dict, probl
             continue
         parts.append(f"<h3>{exchange}</h3>")
         for cols, items in summary_groups(tables):
-            extra = list(BACKUP_COLS) if has_backup(cols) else []
+            heads = summary_cells(kind, cols, items[0][1])[0]
             parts.append('<div class="wrap"><table><thead><tr><th>品种</th><th>代码</th><th>单位</th><th>汇总行</th>'
-                         + "".join(f"<th>{html.escape(c)}</th>" for c in list(cols) + extra) + "</tr></thead><tbody>")
+                         + "".join(f"<th>{html.escape(c)}</th>" for c in heads) + "</tr></thead><tbody>")
             for t, r in items:
-                tds = []
-                tail = ""
-                if extra:
-                    b, chg = backup_texts(r)
-                    tail = f"<td>{b}</td><td{change_class(to_number(chg))}>{chg}</td>"
-                for c in cols:
-                    v = r.get(c, "")
-                    n = to_number(v)
-                    cls = ""
-                    if n and "增减" in c:
-                        cls = ' class="up"' if n > 0 else ' class="down"'
-                    tds.append(f"<td{cls}>{html.escape(v)}</td>")
+                tds = [f"<td{change_class(n)}>{html.escape(v)}</td>" for v, n in summary_cells(kind, cols, r)[1]]
                 parts.append(f"<tr><td>{html.escape(t['product'])}</td><td>{t['code']}</td><td>{html.escape(t['unit'])}</td>"
-                             f"<td>{html.escape(row_label(t, r))}</td>" + "".join(tds) + tail + "</tr>")
+                             f"<td>{html.escape(row_label(t, r))}</td>" + "".join(tds) + "</tr>")
             parts.append("</tbody></table></div>")
     parts.append("</section>")
     return "\n".join(parts)
@@ -615,15 +651,17 @@ def product_metrics(parsed: dict, kind: str) -> dict[str, dict]:
     for t in parsed["tables"]:
         cols = t["columns"]
         if kind == "dailystock":
-            wcol, scol = first_col(cols, ["期货", "本日数量"]), None
+            wcol, scol, ccol = first_col(cols, ["期货", "本日数量"]), None, None
         else:
-            wcol = first_col(cols, ["本周库存-期货", "本周期货", "本周库存"])
-            scol = first_col(cols, ["本周库存-小计"])
+            wcol = first_col(cols, [f"本周库存{SEP}期货", "本周期货", "本周库存"])
+            scol = first_col(cols, [f"本周库存{SEP}小计"])
+            ccol = first_col(cols, [f"可用库容量{SEP}本周", f"理论可用库容量{SEP}本周"])
         m = out.setdefault(t["base"], {"code": t["code"], "unit": t["unit"], "exchange": t["exchange"],
-                                       "warrant": None, "stock": None, "backup": None, "parts": []})
+                                       "warrant": None, "stock": None, "backup": None, "capacity": None,
+                                       "parts": []})
         m["parts"].append(t["product"])
         vals = {}
-        for key, col in (("warrant", wcol), ("stock", scol)):
+        for key, col in (("warrant", wcol), ("stock", scol), ("capacity", ccol)):
             v = vals[key] = table_total(t, col) if col else None
             if v is not None:
                 m[key] = (m[key] or 0) + v
@@ -1133,7 +1171,7 @@ def coverage_alerts(code: str, hist: list[dict], cur: dict, res: dict) -> list[t
     if len(same) < S["最少样本"]:
         return []
     rank = bisect.bisect_right(same, cur["coverage"]) / len(same) * 100
-    res.update(same_rank=rank, same_n=len(same))
+    res.update(same_rank=rank, same_n=len(same), same_median=percentile(same, 50))
     if cur["coverage"] >= R["覆盖率_上限"]:
         return []
     lvl = "高" if rank <= R["覆盖率同期_高"] else "中" if rank <= R["覆盖率同期_中"] else None
@@ -1142,7 +1180,8 @@ def coverage_alerts(code: str, hist: list[dict], cur: dict, res: dict) -> list[t
     lower = "比全部同期日子都低" if rank == 0 else f"比 {100 - rank:.0f}% 的同期日子都低"
     return [(lvl, "↓", f"近月覆盖率（{code}{cur['near']}）：{cur['coverage']:.1f}%"
              f"（仓单 {cur['lots']:.0f} 手 ÷ 近月持仓 {fmt_number(cur['near_oi'])} 手），"
-             f"跟过去每月 {cur['date'].day} 号前后 {S['日期邻域']} 天的 {len(same)} 个交易日比，{lower}")]
+             f"跟过去每月 {cur['date'].day} 号前后 {S['日期邻域']} 天的 {len(same)} 个交易日比，{lower}"
+             f"（同期中位数 {res['same_median']:.1f}%）")]
 
 
 def analyze_spread(code: str, rows: list[dict]) -> dict:
@@ -1330,6 +1369,265 @@ def write_spread_outputs(latest: dt.date, years: int, built=None) -> tuple[list[
     return [md, csv_path], spread_to_html_section(results, meta)
 
 
+# ---------------------------------------------------------------- 品种历史查询（指定代码 + 时间段）
+
+SHFE_OLD_WEEKLY_URL = "https://www.shfe.com.cn/data/tradedata/future/weeklydata/{date}weeklystock.dat"
+HISTORY_OUT = OUTPUT / "历史查询"
+
+
+def _old_label(r: dict, key: str) -> str:
+    return str(r.get(key) or "").split("$$")[0].strip()
+
+
+def old_metrics(text: str, kind: str, stock_bases: set[str]) -> dict[str, dict]:
+    """旧格式（JSON，约 2025-11 以前）日报 / 周报 → 和 product_metrics 一样的按品种汇总，仓库 + 厂库相加。
+    周报字段：SPOTWGHTS = 小计，WRTWGHTS = 期货（仓单），WHSTOCKS = 可用库容（与新格式逐个核对过）。"""
+    j = json.loads(text)
+    groups: dict[str, list] = {}
+    for key in ("o_cursor", "o_cursorine", "o_cursorfu"):
+        for r in j.get(key) or []:
+            groups.setdefault(_old_label(r, "VARNAME"), []).append(r)
+    out: dict[str, dict] = {}
+    for name, rows in groups.items():
+        base = re.sub(r"[(（]?(仓库|厂库)[)）]?$", "", name).strip()
+        code = PRODUCT_CODES.get(base)
+        if not code:
+            continue
+        total = [r for r in rows if _old_label(r, "WHABBRNAME") == "总计"]
+        use = total[:1] or [r for r in rows if "计" not in _old_label(r, "REGNAME") + _old_label(r, "WHABBRNAME")]
+
+        def num(k: str) -> float | None:
+            got = [r.get(k) for r in use if str(r.get(k, "")).strip() != ""]
+            return sum(float(v) for v in got) if got else None
+
+        m = out.setdefault(base, {"code": code, "unit": OLD_UNITS.get(str(rows[0].get("WGHTUNIT")), ""),
+                                  "warrant": None, "stock": None, "backup": None, "capacity": None, "parts": []})
+        m["parts"].append(name)
+        vals = {"warrant": num("WRTWGHTS"), "stock": None, "capacity": None}
+        if kind == "weeklystock":
+            vals["capacity"] = num("WHSTOCKS")
+            if base in stock_bases and "厂库" not in name:  # 只有新格式里也有「小计」的品种才用
+                vals["stock"] = num("SPOTWGHTS")
+        for k, v in vals.items():
+            if v is not None:
+                m[k] = (m[k] or 0) + v
+        if vals["stock"] is not None and vals["warrant"] is not None:
+            m["backup"] = (m["backup"] or 0) + vals["stock"] - vals["warrant"]
+    for r in j.get("o_cursorau") or []:  # 周报里黄金单独一张表，只有仓单
+        out["黄金"] = {"code": "au", "unit": OLD_UNITS.get(str(r.get("WGHTUNIT")), "千克"),
+                     "warrant": float(r.get("WRTWGHTS") or 0), "stock": None, "backup": None,
+                     "capacity": None, "parts": ["黄金"]}
+    return out
+
+
+def history_metrics(kind: str, d: dt.date, stock_bases: set[str]) -> dict[str, dict] | None:
+    """某天的日报 / 周报按品种汇总。下载过的读本地；交易所没有这天返回 None。"""
+    ds = d.strftime("%Y%m%d")
+
+    def new() -> dict | None:
+        recent = CACHE / f"{kind}_{ds}.html"
+        text = recent.read_text(encoding="utf-8") if recent.exists() else fetch_gz(
+            report_url(kind, d), HISTORY_DIR / f"{kind}_{ds}.html.gz", lambda t: "el-table_table" in t)
+        return product_metrics(parse_stock_html(text), kind) if text else None
+
+    def old() -> dict | None:
+        url = (SHFE_OLD_STOCK_URL if kind == "dailystock" else SHFE_OLD_WEEKLY_URL).format(date=ds)
+        text = fetch_gz(url, HISTORY_DIR / f"{kind}_{ds}.dat.gz", lambda t: '"o_cursor"' in t)
+        return old_metrics(text, kind, stock_bases) if text else None
+
+    for getter in ((new, old) if d >= NEW_FORMAT_FROM else (old, new)):
+        m = getter()
+        if m:
+            return m
+    return None
+
+
+def collect_history(start: dt.date, end: dt.date, stock_bases: set[str]) -> tuple[dict, dict, int]:
+    """返回（日报 {日期: 汇总}，周报 {日期: 汇总}，缺数据的交易日数）。每周取该周最后一个有周报的交易日。"""
+    days = [start + dt.timedelta(days=i) for i in range((end - start).days + 1)]
+    trading = [d for d in days if is_trading_day(d)]
+    weeks: dict[tuple, list[dt.date]] = {}
+    for d in trading:
+        weeks.setdefault(d.isocalendar()[:2], []).append(d)
+    daily, weekly = {}, {}
+    log(f"  需要 {len(trading)} 个交易日的日报、{len(weeks)} 期周报（下载过的直接读本地）……")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = {pool.submit(history_metrics, "dailystock", d, stock_bases): ("d", d) for d in trading}
+        jobs.update({pool.submit(history_metrics, "weeklystock", ds[-1], stock_bases): ("w", ds[-1])
+                     for ds in weeks.values()})
+        for i, job in enumerate(as_completed(jobs), 1):
+            which, d = jobs[job]
+            m = job.result()
+            if m:
+                (daily if which == "d" else weekly)[d] = m
+            if i % 100 == 0:
+                log(f"    进度 {i}/{len(jobs)}")
+    for ds in weeks.values():  # 周末那天没有周报（如节假日调休），往前找同一周的
+        if ds[-1] not in weekly:
+            for d in reversed(ds[:-1]):
+                m = history_metrics("weeklystock", d, stock_bases)
+                if m:
+                    weekly[d] = m
+                    break
+    return daily, dict(sorted(weekly.items())), len(trading) - len(daily)
+
+
+def series_stats(points: list[tuple[dt.date, float]]) -> list[str]:
+    """起点、终点、变化、最高（日期）、最低（日期）。"""
+    if not points:
+        return ["—"] * 5
+    (d0, v0), (d1, v1) = points[0], points[-1]
+    hi = max(points, key=lambda x: x[1])
+    lo = min(points, key=lambda x: x[1])
+    return [f"{fmt_number(v0)}（{d0:%Y-%m-%d}）", f"{fmt_number(v1)}（{d1:%Y-%m-%d}）", fmt_chg(v1, v0),
+            f"{fmt_number(hi[1])}（{hi[0]:%Y-%m-%d}）", f"{fmt_number(lo[1])}（{lo[0]:%Y-%m-%d}）"]
+
+
+def history_product(base: str, daily: dict, weekly: dict) -> dict:
+    pick = lambda src, key: [(d, m[base][key]) for d, m in sorted(src.items())
+                             if base in m and m[base].get(key) is not None]
+    info = next((m[base] for _, m in sorted(daily.items(), reverse=True) if base in m), None) or \
+        next((m[base] for _, m in sorted(weekly.items(), reverse=True) if base in m), None)
+    parts = sorted({p for src in (daily, weekly) for m in src.values() if base in m for p in m[base]["parts"]})
+    return {"base": base, "code": PRODUCT_CODES.get(base, ""), "unit": info["unit"] if info else "",
+            "combined": any("厂库" in p for p in parts),
+            "daily": pick(daily, "warrant"), "w_warrant": pick(weekly, "warrant"), "w_stock": pick(weekly, "stock"),
+            "w_backup": pick(weekly, "backup"), "w_capacity": pick(weekly, "capacity"),
+            "weeks": [d for d, m in sorted(weekly.items()) if base in m],
+            "wmap": {d: m[base] for d, m in weekly.items() if base in m}}
+
+
+def history_sections(p: dict) -> list[tuple[str, list[tuple[dt.date, float]]]]:
+    stock_label = "库存小计（周报，仅仓库）" if p["combined"] else "库存小计（周报）"
+    return [("仓单（日报）", p["daily"]), (stock_label, p["w_stock"]),
+            ("后备货 = 小计 − 仓单（周报）", p["w_backup"]), ("可用库容（周报）", p["w_capacity"])]
+
+
+def history_to_markdown(products: list[dict], start: dt.date, end: dt.date, missing: int) -> str:
+    lines = [f"# 仓储历史查询（{start:%Y-%m-%d} ~ {end:%Y-%m-%d}）", "",
+             "- 数据来源：上期所官网仓单日报、库存周报（约 2025-11 以前是旧格式，脚本已核对新旧格式在重叠日期完全一致）。",
+             "- 同一品种的仓库和厂库已相加（品种名后注明）；厂库没有「小计」，所以库存小计和后备货只算仓库。",
+             f"- 回看期内交易所缺数据的交易日：{missing} 天。" if missing else "- 回看期内每个交易日都有日报。",
+             "- 涨跌幅 = 增减 ÷ 上一期数量。只是数据整理，不构成买卖建议。", ""]
+    for p in products:
+        name = p["base"] + ("（仓库+厂库）" if p["combined"] else "")
+        lines += [f"## {name} {p['code']}" + (f"（单位：{p['unit']}）" if p["unit"] else ""), ""]
+        if not p["daily"] and not p["weeks"]:
+            lines += ["这段时间没有这个品种的数据。", ""]
+            continue
+        lines += ["| 指标 | 起点 | 终点 | 变化 | 区间最高 | 区间最低 |", "|---|---|---|---|---|---|"]
+        lines += [f"| {label} | " + " | ".join(series_stats(pts)) + " |" for label, pts in history_sections(p) if pts]
+        lines += ["", "### 逐日仓单（新的在上）", "", "| 日期 | 仓单 | 增减 | 涨跌幅 |", "|---|---|---|---|"]
+        pts = p["daily"]
+        for i in range(len(pts) - 1, -1, -1):
+            d, v = pts[i]
+            prev = pts[i - 1][1] if i else None
+            chg = None if prev is None else v - prev
+            lines.append(f"| {d:%Y-%m-%d} | {fmt_number(v)} | {fmt_signed(chg)} | {pct_of_change(chg, v)} |")
+        if p["weeks"]:
+            lines += ["", "### 逐周库存（新的在上）", "",
+                      "| 周报日期 | 库存小计 | 小计增减 | 仓单 | 仓单增减 | 后备货 | 后备货增减 | 可用库容 |",
+                      "|---|---|---|---|---|---|---|---|"]
+            ws = p["weeks"]
+            for i in range(len(ws) - 1, -1, -1):
+                m, pm = p["wmap"][ws[i]], (p["wmap"][ws[i - 1]] if i else {})
+                cells = []
+                for key in ("stock", "warrant", "backup"):
+                    v, pv = m.get(key), pm.get(key)
+                    cells.append("—" if v is None else fmt_number(v))
+                    cells.append("—" if v is None or pv is None else f"{fmt_signed(v - pv)}（{pct_of_change(v - pv, v)}）")
+                cells.append("—" if m.get("capacity") is None else fmt_number(m["capacity"]))
+                lines.append(f"| {ws[i]:%Y-%m-%d} | " + " | ".join(cells) + " |")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def history_to_csv(folder: Path, stamp: str, products: list[dict]) -> list[Path]:
+    made = []
+    for p in products:
+        if not p["daily"] and not p["weeks"]:
+            continue
+        path = folder / f"历史_{p['code']}_日度_{stamp}.csv"
+        folder.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["日期", f"仓单（{p['unit']}）"])
+            w.writerows([[d.strftime("%Y-%m-%d"), fmt_number(v)] for d, v in p["daily"]])
+        made.append(path)
+        if p["weeks"]:
+            path = folder / f"历史_{p['code']}_周度_{stamp}.csv"
+            with path.open("w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(["周报日期", "库存小计", "仓单", "后备货", "可用库容"])
+                for d in p["weeks"]:
+                    m = p["wmap"][d]
+                    w.writerow([d.strftime("%Y-%m-%d")] + ["" if m.get(k) is None else fmt_number(m[k])
+                                                           for k in ("stock", "warrant", "backup", "capacity")])
+            made.append(path)
+    return made
+
+
+def history_to_html(products: list[dict], start: dt.date, end: dt.date, missing: int) -> str:
+    parts = [f'<p class="note">{start:%Y-%m-%d} ~ {end:%Y-%m-%d}。仓库和厂库已相加；库存小计、后备货只算仓库。'
+             f'走势线上的点可以用鼠标悬停看日期和数值。{"缺数据的交易日：" + str(missing) + " 天。" if missing else ""}'
+             "逐日 / 逐周明细见同名 .md 文件和 CSV。</p>"]
+    for p in products:
+        name = p["base"] + ("（仓库+厂库）" if p["combined"] else "")
+        parts.append(f"<section><h2>{html.escape(name)} {p['code']} <small>{'单位：' + html.escape(p['unit']) if p['unit'] else ''}</small></h2>")
+        if not p["daily"] and not p["weeks"]:
+            parts.append("<p>这段时间没有这个品种的数据。</p></section>")
+            continue
+        parts.append("<div class='wrap'><table><thead><tr><th>指标</th><th>走势</th><th>起点</th><th>终点</th>"
+                     "<th>变化</th><th>区间最高</th><th>区间最低</th></tr></thead><tbody>")
+        for label, pts in history_sections(p):
+            if pts:
+                s = series_stats(pts)
+                parts.append(f"<tr><td>{html.escape(label)}</td><td>{sparkline(pts, p['unit'], 360, 70)}</td>"
+                             + "".join(f"<td>{html.escape(x)}</td>" for x in s) + "</tr>")
+        parts.append("</tbody></table></div></section>")
+    return "\n".join(parts)
+
+
+def run_history(args) -> list[Path]:
+    bases = resolve_products(args.products)
+    unknown = [b for b in bases if b not in PRODUCT_CODES]
+    if unknown:
+        raise RuntimeError(f"不认识的品种：{'、'.join(unknown)}。可以写代码（如 al、cu）或中文名（如 铝、铜）")
+    log("正在确定最新交易日……")
+    # 哪些品种的周报有「小计」：以最新一期周报为准（旧格式里别的品种这一栏是空的或 0）
+    _, _, wtext = fetch_stock("weeklystock", dt.date.today(), 14)
+    stock_bases = {t["base"] for t in parse_stock_html(wtext)["tables"] if f"本周库存{SEP}小计" in t["columns"]}
+    if args.end:
+        end = parse_date(args.end)
+        while not is_trading_day(end):
+            end -= dt.timedelta(days=1)
+    else:
+        end, _, _ = fetch_stock("dailystock", dt.date.today(), 10)
+    start = parse_date(args.start) if args.start else end - dt.timedelta(days=args.days)
+    if start > end:
+        raise RuntimeError(f"开始日期 {start} 晚于结束日期 {end}")
+    log(f"正在整理 {'、'.join(bases)} 的仓储历史（{start:%Y-%m-%d} ~ {end:%Y-%m-%d}）……")
+    daily, weekly, missing = collect_history(start, end, stock_bases)
+    if not daily and not weekly:
+        raise RuntimeError("这段时间一份报表都没取到，可能是网络问题，请稍后再试")
+    products = [history_product(b, daily, weekly) for b in bases]
+    stamp = f"{'_'.join(p['code'] for p in products)}_{start:%Y%m%d}_{end:%Y%m%d}"
+    md = HISTORY_OUT / f"历史_{stamp}.md"
+    write_text(md, history_to_markdown(products, start, end, missing))
+    page = HISTORY_OUT / f"历史_{stamp}.html"
+    write_text(page, HTML_PAGE.format(date=f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}",
+                                      now=f"{dt.datetime.now():%Y-%m-%d %H:%M}",
+                                      sections=history_to_html(products, start, end, missing))
+               .replace("<title>仓储速览", "<title>仓储历史")
+               .replace("<h1>上期所 / 上期能源 仓储速览</h1>",
+                        f"<h1>仓储历史：{html.escape('、'.join(p['base'] for p in products))}</h1>"))
+    made = [md, page] + history_to_csv(HISTORY_OUT, f"{start:%Y%m%d}_{end:%Y%m%d}", products)
+    log(f"  {len(daily)} 个交易日日报 + {len(weekly)} 期周报 → {md.relative_to(ROOT)}")
+    if args.open:
+        webbrowser.open(page.as_uri())
+    return made
+
+
 HTML_PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1362,6 +1660,45 @@ ul.alerts {{ padding-left: 18px; font-size: 13px; line-height: 1.7; }} ul.alerts
 """
 
 
+COVERAGE_HEADS = ["品种", "代码", "近月合约", "仓单(手)", "近月持仓(手)", "近月覆盖率", "同期排名", "同期中位数", "风险提示"]
+COVERAGE_NOTE = ("近月覆盖率 = 仓单（换算成手）÷ 近月合约持仓，越高越不容易被挤。月中低于 100% 很常见（很多持仓到月底前会平仓或换月），"
+                 "所以跟自己过去 3 年「每月同一时段」（月内日期前后 {day} 天，不含本月）比：同期排名 = 有多少同期日子的覆盖率不高于今天，"
+                 "0% = 同期最低；同期中位数 = 同期日子覆盖率的中间值。排名 ≤{hi}% 提示【高】，≤{mid}% 提示【中】。")
+
+
+def coverage_rows(results: list[dict]) -> list[list[str]]:
+    rows = []
+    for r in results:
+        c, cur = r["code"], r.get("cur")
+        if r["status"] != "ok" or not cur:
+            rows.append([r["name"], c, f"{c}{cur['near']}" if cur else "—", "—", "—", "—", "—", "—", r["status"]])
+            continue
+        lvl = "、".join(f"【{a[0]}】" for a in r.get("alerts", [])) or "—"
+        rank = "—" if r.get("same_rank") is None else f"{r['same_rank']:.0f}%"
+        med = "—" if r.get("same_median") is None else f"{r['same_median']:.1f}%"
+        rows.append([r["name"], c, f"{c}{cur['near']}", f"{cur['lots']:.0f}", fmt_number(cur["near_oi"]),
+                     f"{cur['coverage']:.1f}%", rank, med, lvl])
+    return rows
+
+
+def coverage_note() -> str:
+    R = RISK_RULES
+    return COVERAGE_NOTE.format(day=SPREAD_RULES["日期邻域"], hi=R["覆盖率同期_高"], mid=R["覆盖率同期_中"])
+
+
+def coverage_to_markdown(results: list[dict]) -> str:
+    lines = ["## 近月覆盖率（au、al、ao、rb、hc、pb、zn、sn、cu、nr、br）", "", coverage_note(), "",
+             "| " + " | ".join(COVERAGE_HEADS) + " |", "|" + "---|" * len(COVERAGE_HEADS)]
+    lines += ["| " + " | ".join(row) + " |" for row in coverage_rows(results)]
+    return "\n".join(lines + [""])
+
+
+def coverage_to_html(results: list[dict]) -> str:
+    body = "".join("<tr>" + "".join(f"<td>{html.escape(x)}</td>" for x in row) + "</tr>" for row in coverage_rows(results))
+    return (f"<h3>近月覆盖率</h3><p class='note'>{html.escape(coverage_note())}</p><div class='wrap'><table><thead><tr>"
+            + "".join(f"<th>{h}</th>" for h in COVERAGE_HEADS) + f"</tr></thead><tbody>{body}</tbody></table></div>")
+
+
 def add_coverage_alerts(trend: dict, results: list[dict]) -> None:
     by_code = {p["code"]: p for p in trend["products"]}
     for r in results:
@@ -1376,6 +1713,7 @@ def run_stock(args) -> list[Path]:
     made: list[Path] = []
     sections = []
     latest: dict[str, dt.date] = {}
+    fetched = []
     for kind, max_back in (("dailystock", 10), ("weeklystock", 14)):
         name = REPORTS[kind]
         log(f"正在获取{name}……")
@@ -1384,24 +1722,33 @@ def run_stock(args) -> list[Path]:
         if not parsed["tables"]:
             raise RuntimeError(f"{name}：页面格式可能变了，没解析出任何表格（{url}）")
         latest[kind] = day
-        folder = OUTPUT / "仓储" / f"{day:%Y-%m-%d}"
-        stamp = day.strftime("%Y%m%d")
-        md = folder / f"{name}_{stamp}.md"
-        problems = [msg for t in parsed["tables"] for msg in check_totals(t)]
-        write_text(md, stock_to_markdown(kind, day, url, parsed, wanted, problems))
-        csv_path = folder / f"{name}_{stamp}_分仓库明细.csv"
-        stock_to_csv(csv_path, parsed)
-        made += [md, csv_path]
-        sections.append(stock_to_html_section(kind, day, url, parsed, problems))
-        log(f"  {name}：{day:%Y-%m-%d}，{len(parsed['tables'])} 张品种表 → {md.relative_to(ROOT)}")
-        for msg in problems:
-            log(f"  ⚠ 自检：{msg}")
+        fetched.append((kind, day, url, parsed))
 
-    # 先算跨月价差（里面有近月覆盖率风险提示，要并进趋势文件）
+    # 先算跨月价差：里面的近月覆盖率要写进日报，风险提示要并进趋势文件
     spread_built = None
     if SPREAD_SUMMARY.exists():
         log("正在更新跨月价差参考……")
         spread_built = build_spread(latest["dailystock"], args.years)
+
+    for kind, day, url, parsed in fetched:
+        name = REPORTS[kind]
+        folder = OUTPUT / "仓储" / f"{day:%Y-%m-%d}"
+        stamp = day.strftime("%Y%m%d")
+        md = folder / f"{name}_{stamp}.md"
+        problems = [msg for t in parsed["tables"] for msg in check_totals(t)]
+        text = stock_to_markdown(kind, day, url, parsed, wanted, problems)
+        section = stock_to_html_section(kind, day, url, parsed, problems)
+        if kind == "dailystock" and spread_built:
+            text += "\n" + coverage_to_markdown(spread_built[0])
+            section = section.removesuffix("</section>") + coverage_to_html(spread_built[0]) + "</section>"
+        write_text(md, text)
+        csv_path = folder / f"{name}_{stamp}_分仓库明细.csv"
+        stock_to_csv(csv_path, parsed)
+        made += [md, csv_path]
+        sections.append(section)
+        log(f"  {name}：{day:%Y-%m-%d}，{len(parsed['tables'])} 张品种表 → {md.relative_to(ROOT)}")
+        for msg in problems:
+            log(f"  ⚠ 自检：{msg}")
 
     if args.history_days > 1:
         log(f"正在整理历史：近 {args.history_days} 个交易日仓单、近 {args.history_weeks} 周库存"
@@ -1578,6 +1925,12 @@ def main() -> int:
     p = sub.add_parser("news", help="品种新闻列表")
     p.add_argument("products", nargs="+", help="品种，如 铜 原油")
     add_news_opts(p)
+    p = sub.add_parser("history", help="指定品种的仓单日报 + 库存周报历史，可自选时间段")
+    p.add_argument("products", nargs="+", help="品种代码或名字，如 al 或 铝（可写多个）")
+    p.add_argument("--days", type=int, default=30, help="往前看多少天（自然日，默认 30）")
+    p.add_argument("--start", help="开始日期，如 20250101（写了就不看 --days）")
+    p.add_argument("--end", help="结束日期，如 20251231；默认今天，自动往前找最近有数据的一天")
+    p.add_argument("--open", action="store_true", help="完成后用浏览器打开网页版")
     p = sub.add_parser("all", help="仓储 + 新闻")
     p.add_argument("products", nargs="+", help="品种，如 铜 原油")
     add_stock_opts(p)
@@ -1590,6 +1943,8 @@ def main() -> int:
             made += run_stock(args)
         if args.cmd == "spread":
             made += run_spread(args)
+        if args.cmd == "history":
+            made += run_history(args)
         if args.cmd in ("news", "all"):
             made += run_news(args)
     except RuntimeError as e:
