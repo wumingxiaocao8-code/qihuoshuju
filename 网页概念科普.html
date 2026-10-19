@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>仓储速览概念科普</title>
+<style>
+/* 学习 HTML 统一样式（投行研报风，2026-10-06 小草选定的 A2 版）
+   深海军蓝标题横幅 + 浅天蓝细线；表头深蓝底白字、隔行浅蓝、关键行 tr.hl 加深；数字用 Arial；
+   图表自动编号“图表 N”；金 --gold、铜 --copper 只给对应金属的数据用。
+   不要手改各页面里的副本：改这里，再用 apply_style.py 套到页面上。 */
+/* Research-report style: navy masthead, hairline rules, square corners, tabular numbers, numbered exhibits.
+   Gold and copper stay reserved for those metals' data; --accent is the house navy used for series and highlights. */
+:root{
+  --bg:#F5F6F8; --surface:#FFFFFF; --sunk:#EEF1F5; --ink:#141B26; --muted:#5B6574; --line:#D8DDE4; --rule:#0B2A4A;
+  --accent:#0B3C6E; --accent-soft:#E6EEF7; --gold:#9A740F; --copper:#A3522B; --warn:#B0412A;
+  --mast:#0A2540; --mast-ink:#FFFFFF; --mast-muted:#AFC0D4; --mast-line:rgba(255,255,255,.18);
+  --display:"Noto Serif SC","Songti SC","STSong",serif;
+  --body:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0E131A; --surface:#141B24; --sunk:#1A2330; --ink:#E6EBF1; --muted:#9AA6B5; --line:#2A3442; --rule:#8FB4DC;
+  --accent:#7FAEE0; --accent-soft:#18283B; --gold:#D9B04A; --copper:#DE8C60; --warn:#E5836C;
+  --mast:#08111C; --mast-ink:#F1F4F8; --mast-muted:#8D9DB2; --mast-line:rgba(255,255,255,.12); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0E131A; --surface:#141B24; --sunk:#1A2330; --ink:#E6EBF1; --muted:#9AA6B5; --line:#2A3442; --rule:#8FB4DC;
+  --accent:#7FAEE0; --accent-soft:#18283B; --gold:#D9B04A; --copper:#DE8C60; --warn:#E5836C;
+  --mast:#08111C; --mast-ink:#F1F4F8; --mast-muted:#8D9DB2; --mast-line:rgba(255,255,255,.12); color-scheme:dark}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15.5px;line-height:1.75;margin:0;padding-inline:16px;padding-block:0 72px;counter-reset:exhibit}
+.wrap{max-width:880px;margin:0 auto}
+
+/* Masthead: full-bleed navy band behind the header without widening the page. */
+header.top{color:var(--mast-ink);border-image:linear-gradient(to top,var(--gold) 3px,var(--mast) 3px) fill 0//0 100vmax;padding-block:40px 30px;display:grid;gap:14px}
+.eyebrow{font-size:12px;letter-spacing:.14em;color:var(--accent);font-weight:700}
+header.top .eyebrow{color:var(--mast-muted);display:flex;align-items:center;gap:10px}
+header.top .eyebrow::before{content:"";width:22px;height:2px;background:var(--gold)}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(28px,5.6vw,42px);line-height:1.2;margin:0;letter-spacing:.01em;text-wrap:balance}
+.lede{color:var(--muted);max-width:44em;margin:0}
+header.top .lede{color:var(--mast-muted);font-size:15px}
+.meta{display:flex;flex-wrap:wrap;gap:0;font-size:12.5px;border-top:1px solid var(--mast-line);padding-top:12px}
+.pill{color:var(--mast-ink);padding:0 14px;border-left:1px solid var(--mast-line);line-height:1.6}
+.pill:first-child{padding-left:0;border-left:0}
+.pill.state{color:var(--gold);font-weight:700}
+
+/* Contents */
+nav.toc{margin-top:28px;padding:18px 20px;background:var(--surface);border:1px solid var(--line);border-top:2px solid var(--rule);display:grid;gap:10px}
+nav.toc .lab{font-size:12px;letter-spacing:.14em;color:var(--accent);font-weight:700}
+nav.toc ol{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:0 20px;counter-reset:toc}
+nav.toc li{counter-increment:toc;border-bottom:1px solid var(--line)}
+nav.toc a{display:flex;gap:8px;font-size:13.5px;text-decoration:none;color:var(--ink);padding:5px 0}
+nav.toc a::before{content:counter(toc,decimal-leading-zero);font-family:var(--mono);font-size:12px;color:var(--muted);padding-top:1px}
+nav.toc a:hover,nav.toc a:focus-visible{color:var(--accent);outline:none}
+nav.toc .grp{display:grid;gap:6px;padding-block:6px}
+nav.toc .grp + .grp{border-top:1px solid var(--line);padding-top:14px;margin-top:6px}
+nav.toc .gname{font-size:13.5px;font-weight:700;color:var(--ink)}
+nav.toc .gname a{all:unset;cursor:pointer}
+nav.toc .gname a::before{content:none}
+nav.toc .gname a:hover{color:var(--accent)}
+
+/* Section hierarchy */
+.part{margin-top:52px;padding-top:14px;border-top:2px solid var(--rule);display:grid;gap:4px}
+.part .tag{font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--accent);font-weight:500}
+h2{font-family:var(--display);font-weight:700;font-size:clamp(23px,4.2vw,30px);line-height:1.3;margin:0;text-wrap:balance}
+section.s{padding-block:30px 6px;display:grid;gap:14px}
+h3{font-family:var(--body);font-weight:700;font-size:18.5px;line-height:1.45;margin:0;padding-bottom:8px;border-bottom:1px solid var(--line);color:var(--ink);text-wrap:balance}
+h4{font-size:15px;margin:6px 0 0;color:var(--accent)}
+p{margin:0;max-width:46em}
+ul,ol.list{margin:0;padding-left:1.3em;display:grid;gap:4px;max-width:46em}
+li::marker{color:var(--accent)}
+b,strong{font-weight:700}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.src{font-size:12.5px;color:var(--muted)}
+a{color:var(--accent);text-underline-offset:2px}
+
+/* Tables: top rule, header underline, hairline rows, no outer box. */
+.tbl{overflow-x:auto;background:var(--surface);border-top:2px solid var(--rule);border-bottom:1px solid var(--rule)}
+table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.5;font-variant-numeric:tabular-nums}
+th,td{padding:7px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:var(--surface);color:var(--accent);font-weight:700;font-size:12.5px;letter-spacing:.02em;white-space:nowrap;border-bottom:1px solid var(--rule)}
+tbody tr:nth-child(even) td{background:color-mix(in srgb,var(--sunk) 55%,transparent)}
+tr:last-child td{border-bottom:0}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.r{font-family:var(--mono);font-size:13.5px}
+tbody tr.hl td,tr.hl td{background:var(--accent-soft);font-weight:700;border-top:1px solid var(--rule)}
+
+/* Call-outs */
+.key{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;max-width:46em}
+.key b{color:var(--accent)}
+.unk{border-left:3px solid var(--warn);background:var(--surface);border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:12px 16px;max-width:46em}
+.unk .lbl,.volsrc .lbl{color:var(--warn);font-weight:700;font-size:12px;letter-spacing:.1em}
+.formula{font-family:var(--mono);background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--rule);padding:10px 14px;overflow-x:auto;white-space:pre;font-size:13.5px;line-height:1.7}
+
+/* Exhibits: numbered caption, framed chart. */
+figure{margin:0;display:grid;gap:8px;counter-increment:exhibit;padding-top:10px;border-top:2px solid var(--rule)}
+figure .chart{position:relative;overflow-x:auto;background:var(--surface);border:1px solid var(--line);padding:10px}
+figcaption{font-size:12.5px;color:var(--muted)}
+figcaption::before{content:"图表 " counter(exhibit) "　";font-weight:700;color:var(--accent)}
+svg text{font-family:var(--body);fill:var(--muted);font-size:12px}
+svg .t-ink{fill:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--muted)}
+.legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:6px}
+.tip{position:absolute;display:none;pointer-events:none;background:var(--surface);border:1px solid var(--rule);padding:6px 10px;font-size:12.5px;line-height:1.5;color:var(--ink);box-shadow:0 4px 14px rgba(10,37,64,.16);white-space:nowrap;z-index:2;font-variant-numeric:tabular-nums}
+
+/* Diagrams and cards */
+.flow{display:grid;gap:10px}
+.flow .row{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center}
+.node{background:var(--surface);border:1px solid var(--line);border-top:2px solid var(--muted);padding:10px 12px;min-width:0;font-size:14px;line-height:1.55}
+.node b{display:block;font-size:14.5px}
+.node.out{border-top-color:var(--accent);background:var(--accent-soft)}
+.arrow{color:var(--accent);font-family:var(--mono)}
+.era{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.era > div{background:var(--surface);border:1px solid var(--line);border-top:2px solid var(--rule);padding:14px 16px;min-width:0;display:grid;gap:8px;align-content:start}
+.era .when{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:var(--accent);font-weight:500}
+.steps{counter-reset:st;list-style:none;padding:0;margin:0;display:grid;gap:10px;max-width:46em}
+.steps li{counter-increment:st;position:relative;padding-left:calc(2em + 10px)}
+.steps li::before{position:absolute;left:0;top:0;width:2em;content:counter(st,decimal);font-family:var(--mono);font-size:12.5px;color:var(--mast-ink);background:var(--accent);text-align:center;line-height:1.7;margin-top:2px}
+.steps li.zero{counter-increment:none}
+.steps li.zero::before{content:"0"}
+
+/* Complete edition: volume dividers. */
+.vol{margin-top:80px;padding:26px 24px;background:var(--mast);color:var(--mast-ink);border-bottom:3px solid var(--gold);display:grid;gap:10px}
+.vol .eyebrow{color:var(--mast-muted);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.vol .eyebrow a{color:var(--mast-muted);font-weight:500;letter-spacing:0;font-size:12.5px}
+.vol .lede,.vol p{color:var(--mast-muted)}
+.voltitle{font-family:var(--display);font-weight:700;font-size:clamp(24px,4.8vw,34px);line-height:1.25;margin:0;text-wrap:balance}
+.volsrc{margin-top:36px;padding:12px 16px;border-top:1px solid var(--rule);background:var(--surface);font-size:12.5px;color:var(--muted);display:grid;gap:6px}
+
+footer{margin-top:56px;padding-top:16px;border-top:2px solid var(--rule);font-size:12.5px;color:var(--muted);display:grid;gap:6px}
+
+@media (max-width:560px){
+  .flow .row{grid-template-columns:1fr}
+  .flow .arrow{transform:rotate(90deg);justify-self:center}
+  .vol{padding:22px 16px}
+  .pill{padding:0 10px}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@media print{
+  body{background:#fff;font-size:11pt}
+  header.top,.vol{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  nav.toc{display:none}
+  figure,.tbl,.key,.unk{break-inside:avoid}
+  .part,.vol{break-before:page}
+}
+
+:root{--num:Inter,"Noto Sans SC",Arial,sans-serif}
+td.r{font-family:var(--num);font-size:13.5px;letter-spacing:0}
+.num,.part .tag,.era .when,nav.toc a::before,.steps li::before{font-family:var(--num)}
+.part .tag{letter-spacing:.04em;font-weight:600}
+
+/* A2 */
+:root{--display:"Noto Sans SC","Microsoft YaHei",sans-serif;--body:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;--num:Arial,"Helvetica Neue",Inter,"Noto Sans SC",sans-serif;--th-bg:#0B3C6E;--th-ink:#FFFFFF;--zebra:#F3F6FA;--hl-bg:#DCE7F4;--row-hover:#EAF1F9}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--display:"Noto Sans SC","Microsoft YaHei",sans-serif;--body:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;--num:Arial,"Helvetica Neue",Inter,"Noto Sans SC",sans-serif;--th-bg:#1F4470;--th-ink:#FFFFFF;--zebra:#18212C;--hl-bg:#22344B;--row-hover:#1E2A38;color-scheme:dark}}
+:root[data-theme="dark"]{--display:"Noto Sans SC","Microsoft YaHei",sans-serif;--body:Inter,"Noto Sans SC","Microsoft YaHei",sans-serif;--num:Arial,"Helvetica Neue",Inter,"Noto Sans SC",sans-serif;--th-bg:#1F4470;--th-ink:#FFFFFF;--zebra:#18212C;--hl-bg:#22344B;--row-hover:#1E2A38;color-scheme:dark}
+
+h1,h2,.voltitle{font-weight:700;letter-spacing:0}
+.tbl{border-top:0;border-bottom:2px solid var(--th-bg);background:var(--surface)}
+table{font-size:13.5px}
+th{background:var(--th-bg);color:var(--th-ink);font-size:12.5px;font-weight:700;padding:8px 12px;border-bottom:0;letter-spacing:0}
+td{padding:7px 12px;border-bottom:1px solid var(--line)}
+td:first-child{color:var(--ink);font-weight:500}
+td.r{font-size:13.5px;color:var(--ink)}
+tbody tr:nth-child(even) td{background:var(--zebra)}
+tbody tr:hover td{background:var(--row-hover)}
+tbody tr.hl td,tr.hl td{background:var(--hl-bg);font-weight:700;border-top:1px solid var(--th-bg);color:var(--ink)}
+figure .chart{border:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:10px 0}
+:root{--mast-accent:#5FA8E8}
+header.top{border-image:linear-gradient(to top,var(--mast-accent) 3px,var(--mast) 3px) fill 0//0 100vmax}
+header.top .eyebrow::before{background:var(--mast-accent)}
+.pill.state{color:#fff;font-weight:700}
+.pill.state::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mast-accent);margin-right:6px;vertical-align:1px}
+.vol{border-bottom-color:var(--mast-accent)}
+.formula{font-family:var(--num);font-variant-numeric:tabular-nums;font-size:14.5px;line-height:1.85;color:var(--ink)}
+.formula.fx{display:grid;grid-template-columns:max-content max-content max-content 1fr;column-gap:.55em;white-space:normal;align-items:baseline}
+.formula.fx span{white-space:nowrap}
+.formula.fx .l{text-align:right;font-weight:500}
+.formula.fx .eq{color:var(--muted)}
+.formula.fx .nt{color:var(--muted);font-size:13px;padding-left:1.2em}
+.formula.fx .full{grid-column:1/-1}
+.formula.fx .ind{padding-left:2em}
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap">
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">期货数据 · 配合 output/仓储速览.html 阅读</div>
+  <h1>仓储速览网页里的概念</h1>
+  <p class="lede">网页上出现的每个词，这里都有一段大白话解释和一个小例子。例子统一用同一个故事：学校门口有个"苹果交换站"，同学们在这里约定买卖苹果。读完这个故事，再回去看铜、铝、原油的表格，道理是一样的。</p>
+  <div class="meta">
+    <span class="pill">五篇 · 36 个概念</span>
+    <span class="pill">例子里的苹果数字都是编的</span>
+    <span class="pill">定义以网页说明和 AGENTS.md 为准</span>
+    <span class="pill">只讲概念，不是买卖建议</span>
+  </div>
+</header>
+
+<nav class="toc" id="toc" aria-label="目录">
+  <div class="lab">目录</div>
+  <div class="grp"><div class="gname"><a href="#v0">故事设定 · 苹果交换站</a></div></div>
+  <div class="grp"><div class="gname"><a href="#v1">第一篇 · 先认识期货</a></div><ol>
+    <li><a href="#c1">期货合约</a></li>
+    <li><a href="#c2">多单、空单</a></li>
+    <li><a href="#c3">手、持仓、平仓</a></li>
+    <li><a href="#c4">交割、交割月</a></li>
+    <li><a href="#c5">结算价</a></li>
+    <li><a href="#c6">上期所、上期能源</a></li>
+  </ol></div>
+  <div class="grp"><div class="gname"><a href="#v2">第二篇 · 仓单与库存（仓储标签页）</a></div><ol>
+    <li><a href="#c7">仓单</a></li>
+    <li><a href="#c8">日报的几列</a></li>
+    <li><a href="#c9">仓库、厂库</a></li>
+    <li><a href="#c10">库存小计、期货</a></li>
+    <li><a href="#c11">后备货</a></li>
+    <li><a href="#c12">可用库容</a></li>
+    <li><a href="#c13">日报、周报</a></li>
+  </ol></div>
+  <div class="grp"><div class="gname"><a href="#v3">第三篇 · 趋势与风险提示</a></div><ol>
+    <li><a href="#c14">增减、5日、20日变化</a></li>
+    <li><a href="#c15">位置</a></li>
+    <li><a href="#c16">走势线</a></li>
+    <li><a href="#c17">风险提示等级</a></li>
+    <li><a href="#c18">挤仓</a></li>
+  </ol></div>
+  <div class="grp"><div class="gname"><a href="#v4">第四篇 · 跨月价差参考</a></div><ol>
+    <li><a href="#c19">近月、下月</a></li>
+    <li><a href="#c20">价差</a></li>
+    <li><a href="#c21">反向结构、正向结构</a></li>
+    <li><a href="#c22">价差占下月价格</a></li>
+    <li><a href="#c23">近月覆盖率</a></li>
+    <li><a href="#c24">覆盖率排名</a></li>
+    <li><a href="#c25">同期排名、同期中位数</a></li>
+    <li><a href="#c26">历史最高最低、3年位置</a></li>
+    <li><a href="#c27">历史同类区间</a></li>
+    <li><a href="#c28">价差在同类中的位置</a></li>
+    <li><a href="#c29">只看覆盖率的区间</a></li>
+    <li><a href="#c30">判断、备注</a></li>
+  </ol></div>
+  <div class="grp"><div class="gname"><a href="#v5">第五篇 · 影响因素标签页</a></div><ol>
+    <li><a href="#c31">因素：公共与专属</a></li>
+    <li><a href="#c32">通常怎么影响价差</a></li>
+    <li><a href="#c33">AI 解读：小结、指向</a></li>
+    <li><a href="#c34">长期事件</a></li>
+    <li><a href="#c35">复盘</a></li>
+    <li><a href="#c36">新闻搜索的"翻到"提示</a></li>
+  </ol></div>
+</nav>
+
+<!-- ============ 故事设定 ============ -->
+<div class="part" id="v0">
+  <div class="tag">故事设定</div>
+  <h2>苹果交换站</h2>
+</div>
+
+<section class="s">
+  <p>学校门口开了一个<b>苹果交换站</b>，由老师管理。同学们可以在这里签"约定"：将来某个月，一方交一箱苹果，另一方付钱，价格今天就说好。交换站还有一间库房，合格的苹果放进去，老师会发一张<b>苹果券</b>。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>故事里</th><th>真实世界</th></tr></thead>
+    <tbody>
+      <tr><td>苹果交换站、老师</td><td>期货交易所（上期所 / 上期能源）</td></tr>
+      <tr><td>"下个月交一箱苹果"的约定</td><td>期货合约</td></tr>
+      <tr><td>交换站的库房</td><td>交易所指定的交割仓库</td></tr>
+      <tr><td>苹果券</td><td>标准仓单</td></tr>
+      <tr><td>一箱苹果</td><td>一手（铜是 5 吨，铝是 5 吨，螺纹钢是 10 吨……）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============ 第一篇 ============ -->
+<div class="part" id="v1">
+  <div class="tag">第一篇</div>
+  <h2>先认识期货</h2>
+</div>
+
+<section class="s" id="c1">
+  <h3>1. 期货合约</h3>
+  <p>一份<b>将来买卖的约定</b>：约好哪个月、交多少货、什么价格。签的时候不用交货，到时候再交。</p>
+  <div class="key"><b>小例子：</b>今天小红和小明签约："下个月小明卖给小红一箱苹果，价格 50 元。"这张约定书就是一份期货合约。</div>
+</section>
+
+<section class="s" id="c2">
+  <h3>2. 多单、空单</h3>
+  <p>约定里<b>答应买</b>的一方叫多单（做多），<b>答应卖</b>的一方叫空单（做空）。</p>
+  <div class="key"><b>小例子：</b>上面的约定里，小红答应买，她拿的是多单；小明答应卖，他拿的是空单。</div>
+  <div class="unk"><div class="lbl">易混提醒</div><p>空单只是"答应卖"，跟手里有没有苹果无关。小明可以一个苹果都没有，到时候再去买来交；也可以到期前把约定转给别人，自己退出。</p></div>
+</section>
+
+<section class="s" id="c3">
+  <h3>3. 手、持仓、平仓</h3>
+  <p><b>手</b>是合约的计数单位，一手代表交易所规定的一份标准数量，比如铜一手是 5 吨。<b>持仓</b>是市场上还没了结的合约有多少手（一手多单对应一手空单，算一手）。<b>平仓</b>是把手上的约定反向了结掉、提前退出。</p>
+  <div class="key"><b>小例子：</b>全班一共签了 10 份"下个月交一箱苹果"的约定，还没有人退出，持仓就是 10 手。后来小明找到小刚，把自己那份卖苹果的约定转给了他，小明就平仓退出了；约定还在，只是换了人，持仓还是 10 手。如果是买方和卖方商量好一起撕掉约定，持仓就变成 9 手。</div>
+</section>
+
+<section class="s" id="c4">
+  <h3>4. 交割、交割月</h3>
+  <p><b>交割</b>就是约定到期时一手交钱、一手交货。合约代码里的数字就是交割月：<b>2611</b> = 2026 年 11 月交割。多数品种在交割月 15 日前后停止交易；原油、低硫燃料油、燃料油更早，在交割月的前一个月月底就停了。</p>
+  <div class="key"><b>小例子：</b>"苹果 2611"这份约定，到了 11 月中旬就不能再转让了。还拿着空单的小明必须交出一箱苹果，还拿着多单的小红必须付 50 元把苹果收走。</div>
+</section>
+
+<section class="s" id="c5">
+  <h3>5. 结算价</h3>
+  <p>每天收盘后，交易所给每个合约定一个"当天的官方价格"，叫结算价。上期所的算法是把当天所有成交价按成交量加权平均。网页里的价差都用结算价算，不用收盘价。</p>
+  <div class="key"><b>小例子：</b>今天"苹果 2611"一共成交了 3 次：2 份按 50 元、1 份按 53 元。结算价 =（50×2 + 53×1）÷ 3 = 51 元。成交多的价格，分量更重。</div>
+</section>
+
+<section class="s" id="c6">
+  <h3>6. 上期所、上期能源</h3>
+  <p>上海期货交易所（上期所）和它旗下的上海国际能源交易中心（上期能源，英文缩写 INE）。上期能源的品种有原油、低硫燃料油、20号胶、国际铜；其余品种都在上期所。网页里两家的表分开列。</p>
+  <div class="key"><b>小例子：</b>学校有两个交换站，一个在东门，一个在西门，都归同一位校长管，只是卖的东西不一样，每天各自贴各自的告示。</div>
+</section>
+
+<!-- ============ 第二篇 ============ -->
+<div class="part" id="v2">
+  <div class="tag">第二篇 · 仓储标签页</div>
+  <h2>仓单与库存</h2>
+</div>
+
+<section class="s" id="c7">
+  <h3>7. 仓单（标准仓单）</h3>
+  <p>货运进交易所指定仓库、质检合格、货主申请注册后，交易所认可的<b>提货凭证</b>。拿着它可以直接交割，也可以转让、抵保证金，或者注销后把货拉走。仓单跟有没有期货持仓无关，它只说明"这里有一批随时能交割的货"。</p>
+  <div class="key"><b>小例子：</b>小明把一箱苹果搬进交换站库房，老师检查合格，他申请后拿到一张苹果券。小明没签过任何约定，照样可以拿券。以后他可以用券去交割、把券卖给小红，或者撕掉券、把苹果搬回家。</div>
+  <div class="unk"><div class="lbl">易混提醒</div><p>仓单不是空单。仓单是"手里有货的凭证"，空单是"答应卖的约定"。很多货主会两样都有：开空单，到期用仓单交货，这叫卖出套保。但这是他们自己的选择，两者本身是两回事。</p></div>
+</section>
+
+<section class="s" id="c8">
+  <h3>8. 日报里的几列：期货（本日数量）、增减、涨跌幅</h3>
+  <p><b>期货 / 本日数量</b>：已经注册成仓单的货有多少。<b>增减</b>：比上一个交易日多了或少了多少。<b>涨跌幅</b>：增减 ÷ 前一天的数量，是脚本算的。</p>
+  <div class="key"><b>小例子：</b>昨天交换站有 80 张苹果券，今天有 100 张。本日数量 = 100，增减 = +20，涨跌幅 = 20 ÷ 80 = +25%。</div>
+</section>
+
+<section class="s" id="c9">
+  <h3>9. 仓库、厂库</h3>
+  <p>交易所分开发两张表。<b>仓库</b>：货真的运进了交割仓库。<b>厂库</b>：货不用搬，由交易所认可的大型生产厂家用自己的信用开仓单，到时候由厂家直接发货。网页的趋势表已经把两者加在一起，品种名后会写"（仓库+厂库）"。</p>
+  <div class="key"><b>小例子：</b>小华家是全县最大的果园，老师信得过他家。小华不用把苹果搬到交换站，老师直接给他发券；谁拿这张券来提货，小华家就从果园发货。</div>
+</section>
+
+<section class="s" id="c10">
+  <h3>10. 库存小计、期货（周报）</h3>
+  <p>周报里，<b>小计</b>是仓库里符合交割品质的货一共有多少；<b>期货</b>是其中已经注册成仓单的部分。所以小计通常比期货多。列名里的"·"只是分隔符，"本周库存·小计"就是"本周库存里的小计"，不是减号。</p>
+  <div class="key"><b>小例子：</b>交换站库房里有 100 箱检查合格的苹果（小计 = 100），其中 60 箱的主人已经换了券（期货 = 60）。</div>
+</section>
+
+<section class="s" id="c11">
+  <h3>11. 后备货</h3>
+  <p>后备货 = 库存小计 − 期货：合格、已经在库里，但还没换成仓单的货。主人想换随时能换，所以它是仓单的"预备队"。厂库没有小计，后备货只算仓库部分。</p>
+  <div class="key"><b>小例子：</b>接上例，100 箱合格苹果里 60 箱换了券，剩下 40 箱就是后备货。如果哪天苹果券突然紧缺，这 40 箱的主人很快就能去换券补上。</div>
+</section>
+
+<section class="s" id="c12">
+  <h3>12. 可用库容、理论可用库容</h3>
+  <p><b>可用库容</b>：仓库还能再放多少可以注册成仓单的货。厂库那张表里对应的列叫<b>理论可用库容</b>，意思相近，指厂家按核定额度还能再开多少仓单。</p>
+  <div class="key"><b>小例子：</b>交换站库房最多放 150 箱，现在放了 100 箱，可用库容就是 50 箱。如果可用库容快变成 0，就算有人想送苹果来换券，也放不下了。</div>
+</section>
+
+<section class="s" id="c13">
+  <h3>13. 仓单日报、库存周报</h3>
+  <p><b>仓单日报</b>每个交易日发一次，只报仓单。<b>库存周报</b>每周最后一个交易日发一次，报库存小计、仓单和可用库容。单位多数是吨，黄金、白银是千克，原油是桶。</p>
+  <div class="key"><b>小例子：</b>老师每天放学贴一张"今天发出了多少张苹果券"（日报）；每周五再贴一张大表，写库房里一共有多少箱合格苹果、多少箱换了券、还剩多少空位（周报）。</div>
+</section>
+
+<!-- ============ 第三篇 ============ -->
+<div class="part" id="v3">
+  <div class="tag">第三篇 · 仓储标签页</div>
+  <h2>趋势与风险提示</h2>
+</div>
+
+<section class="s" id="c14">
+  <h3>14. 日增减、5日变化、20日变化、周变化</h3>
+  <p>分别是比 1 个、5 个、20 个交易日前多了还是少了，括号里是变化的百分比；周变化是比上周。网页里<b>红色 = 增加，绿色 = 减少</b>。</p>
+  <div class="key"><b>小例子：</b>苹果券今天 60 张，昨天 62 张，5 天前 100 张。日增减 = −2（−3.2%），5 日变化 = −40（−40%）。只看一天几乎没变，看 5 天才发现少了很多。</div>
+</section>
+
+<section class="s" id="c15">
+  <h3>15. 位置</h3>
+  <p>今天的数在回看期最低到最高之间排在哪：0%（"最低"）= 回看期最低点，100%（"最高"）= 回看期最高点。</p>
+  <div class="key"><b>小例子：</b>过去 20 天苹果券最少 40 张、最多 140 张，今天 90 张，正好在中间，位置 = 50%。今天如果是 140 张，就写"最高"。</div>
+</section>
+
+<section class="s" id="c16">
+  <h3>16. 走势线</h3>
+  <p>表格里的小折线，把近 20 个交易日（或近 12 周）的数连起来，一眼看出是在涨还是在跌。鼠标放到点上，会显示那天的日期和数值。</p>
+  <div class="key"><b>小例子：</b>把每天的苹果券数量画在一张小方格纸上连成线：线一路往下走，说明券越来越少。</div>
+</section>
+
+<section class="s" id="c17">
+  <h3>17. 风险提示和等级：【高】【中】【提示】</h3>
+  <p>脚本按固定规则自动判断，只说明数据变化够不够大，不判断涨跌。规则如下（阈值在 futures_brief.py 的 RISK_RULES）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>情况</th><th>等级</th></tr></thead>
+    <tbody>
+      <tr><td>近 5 个交易日仓单降超过 30%</td><td>【高】</td></tr>
+      <tr><td>近 5 个交易日仓单降超过 15%</td><td>【中】</td></tr>
+      <tr><td>整个回看期仓单降超过 50% / 30%</td><td>【高】/【中】</td></tr>
+      <tr><td>单日仓单降超过 15%</td><td>【中】</td></tr>
+      <tr><td>仓单只剩回看期最高值的 20% 以下</td><td>【中】</td></tr>
+      <tr><td>近 5 个交易日仓单增加超过 50%</td><td>【提示】</td></tr>
+      <tr><td>周度库存连降至少 3 周、累计降至少 10%</td><td>【中】</td></tr>
+      <tr><td>回看期内周度库存降超过 30% / 增超过 50%</td><td>【高】/【提示】</td></tr>
+      <tr><td>近月覆盖率同期排名 ≤5% / ≤15%（见第 25 条）</td><td>【高】/【中】</td></tr>
+    </tbody>
+  </table></div>
+  <div class="key"><b>小例子：</b>苹果券 5 天前 100 张，今天 60 张，5 天降了 40%，超过 30%，触发【高】。如果 5 天从 100 张涨到 160 张，涨了 60%，触发【提示】：可交割的苹果变多了。</div>
+</section>
+
+<section class="s" id="c18">
+  <h3>18. 挤仓</h3>
+  <p>快到交割时，能交割的货少、等着交割的合约多，拿空单的人凑不齐货，只好高价买回约定退出，近月价格被推高。仓单减少、覆盖率低的提示，说的都是这个风险。</p>
+  <div class="key"><b>小例子：</b>还有 10 份约定等着下周交苹果，可交换站只有 3 张券。没券的 7 个卖方要么四处高价收券，要么花高价把约定买回来撕掉。于是"下周交的苹果"一下子变得很贵。</div>
+</section>
+
+<!-- ============ 第四篇 ============ -->
+<div class="part" id="v4">
+  <div class="tag">第四篇 · 仓储标签页</div>
+  <h2>跨月价差参考</h2>
+</div>
+
+<section class="s" id="c19">
+  <h3>19. 近月、下月</h3>
+  <p><b>近月</b> = 当前月份之后最近的一个交割月合约，<b>下月</b> = 再往后一个。10 月份时，多数品种是 2611 / 2612；天然橡胶没有 12 月合约，是 2611 / 2701。合约不存在时写 none。</p>
+  <div class="key"><b>小例子：</b>现在是 10 月，交换站挂着"11 月交苹果"和"12 月交苹果"两种约定。11 月那个是近月，12 月那个是下月。</div>
+</section>
+
+<section class="s" id="c20">
+  <h3>20. 价差（近月 − 下月）</h3>
+  <p>价差 = 近月结算价 − 下月结算价。<b>正数 = 近月比下月贵</b>，负数 = 近月比下月便宜。价差"变大"就是近月相对下月走强。</p>
+  <div class="key"><b>小例子：</b>11 月苹果 52 元，12 月苹果 50 元，价差 = +2 元，近月贵。过了几天变成 55 元和 50 元，价差变成 +5，"变大"了：大家更想马上拿到苹果。</div>
+</section>
+
+<section class="s" id="c21">
+  <h3>21. 反向结构、正向结构</h3>
+  <p><b>反向结构</b>：近月比下月贵（价差为正），常说明眼前的货紧。<b>正向结构</b>：近月比下月便宜（价差为负），常见于货充足，或者囤货成本高的时候：把货存到下个月要付仓储费和资金利息，所以下月贵一点是正常的。</p>
+  <div class="key"><b>小例子：</b>苹果刚歉收，人人现在就要，11 月苹果卖 55、12 月卖 50：反向结构。反过来，苹果大丰收、库房堆满，11 月卖 48、12 月卖 50：正向结构，多出的 2 元差不多就是多放一个月的冷库费。</div>
+</section>
+
+<section class="s" id="c22">
+  <h3>22. 价差占下月价格</h3>
+  <p>把价差除以下月价格，换成百分比。不同年份价格水平不一样，直接比元数不公平，比百分比才对得上。网页的"历史同类区间"就是按百分比统计的。</p>
+  <div class="key"><b>小例子：</b>前年苹果 50 元，价差 2 元，占 4%；今年苹果涨到 100 元，价差 4 元，也是 4%。看元数好像今年紧了一倍，看百分比其实一样紧。</div>
+</section>
+
+<section class="s" id="c23">
+  <h3>23. 近月覆盖率</h3>
+  <p>覆盖率 = 仓单（换算成手）÷ 近月合约持仓。它比的是"能交割的货"和"可能要交割的合约"。<b>覆盖率越低，近月越容易被挤。</b>日报末尾的"仓单(手)""近月持仓(手)"两列就是分子和分母。</p>
+  <div class="key"><b>小例子：</b>交换站有 6 张苹果券，"11 月交苹果"还有 20 份约定没了结，覆盖率 = 6 ÷ 20 = 30%。换成铜：仓单 5,000 吨，铜一手 5 吨，就是 1,000 手；近月持仓 4,000 手，覆盖率 = 25%。</div>
+  <div class="unk"><div class="lbl">易混提醒</div><p>月中覆盖率低于 100% 很常见：很多持仓会在月底前平仓或换到下个月，不会真的拿到交割。所以不能只看绝对数，要跟历史同一时段比（第 25 条）。</p></div>
+</section>
+
+<section class="s" id="c24">
+  <h3>24. 覆盖率排名</h3>
+  <p>把过去 3 年每天的覆盖率排一排，看今天排在哪。<b>20% = 只有 20% 的日子不比今天高</b>，也就是比 80% 的日子都低。它只说覆盖率，跟价差无关。</p>
+  <div class="key"><b>小例子：</b>把过去 100 天的覆盖率从低到高排成一队，今天站在第 20 个，排名就是 20%：今天的券相对约定来说，比大多数日子都少。</div>
+</section>
+
+<section class="s" id="c25">
+  <h3>25. 同期排名、同期中位数</h3>
+  <p>只跟过去 3 年<b>每个月同一时段</b>的日子比（月内日期前后 5 天，不算本月）。<b>同期排名</b> = 有多少同期日子的覆盖率不高于今天，0% = 同期最低；<b>同期中位数</b> = 那些日子覆盖率的中间值。排名 ≤5% 提示【高】，≤15% 提示【中】；覆盖率在 100% 以上不提示。</p>
+  <div class="key"><b>小例子：</b>期中考试的分数只跟往年的期中考试比，不跟期末比，因为两次考试难度不一样。同理，月初和月底的覆盖率本来就差很多，只拿"每月 18 号前后"跟"每月 18 号前后"比才公平。</div>
+</section>
+
+<section class="s" id="c26">
+  <h3>26. 历史最高、历史最低、3年最高最低、在3年里的位置</h3>
+  <p><b>历史最高 / 最低</b>（3年最高 / 最低）：过去 3 年里每天的"近月 − 下月"价差中，最大和最小的一天，括号里是日期。<b>在3年里的位置</b>：现在的价差比这 3 年里百分之多少的日子高，100% = 最高。不同年份价格水平不一样，元数只能大概比。</p>
+  <div class="key"><b>小例子：</b>过去 3 年，苹果价差最高的一天是 +9 元（那年冰雹），最低的一天是 −3 元（那年大丰收）。今天价差 +5 元，比 3 年里 85% 的日子都高，位置就是 85%。</div>
+</section>
+
+<section class="s" id="c27">
+  <h3>27. 历史同类区间、同类中位数、样本</h3>
+  <p>在过去 3 年里找"同类日子"：覆盖率排名相差不超过 10 个百分点，而且月内日期相差不超过 5 天（不算本月）。把这些日子的价差按占下月价格的百分比排好，去掉最高的 10% 和最低的 10%，剩下<b>中间 80%</b> 的范围，再按今天的下月价格换回元，就是<b>同类区间</b>。<b>同类中位数</b>是正中间那个，<b>样本</b>是找到了多少天。</p>
+  <div class="key"><b>小例子：</b>今天是 10 月 18 号，覆盖率排名 20%。翻过去 3 年的记录，找出所有"每月 13~23 号、覆盖率排名在 10%~30% 之间"的日子，一共 50 天。去掉价差最高的 5 天和最低的 5 天，剩下 40 天的价差在 1~4 元之间，这就是同类区间；正中间那天是 2.5 元，是同类中位数；样本 = 50 天。</div>
+</section>
+
+<section class="s" id="c28">
+  <h3>28. 价差在同类中的位置</h3>
+  <p>现在的价差比多少"同类日子"的价差高。100% = 比所有同类日子都高，0% = 比所有都低。</p>
+  <div class="key"><b>小例子：</b>接上例，50 个同类日子里有 45 天的价差比今天低，位置就是 90%：跟情况差不多的日子比，今天近月算很贵了。</div>
+</section>
+
+<section class="s" id="c29">
+  <h3>29. 只看覆盖率的区间</h3>
+  <p>算法和同类区间一样，但不管月内日期，只要覆盖率排名差不多就算。样本更多，但混进了离交割远近不同的日子，所以只作对照，判断以同类区间为准。括号里是这些日子的覆盖率范围和天数。</p>
+  <div class="key"><b>小例子：</b>不管是月初、月中还是月底，只要券和约定的比例差不多，就都算进来，一下子找到 200 天。人多了，但月初和月底本来就不一样，就像把期中和期末的分数混在一起平均，只能看个大概。</div>
+</section>
+
+<section class="s" id="c30">
+  <h3>30. 判断、备注</h3>
+  <p><b>判断</b>有四种：现在的价差高于同类区间上沿 →"偏高（近月比历史同类情况更贵）"；低于下沿 →"偏低（近月比历史同类情况更便宜）"；在中间 →"在区间内"；找不到同类日子 →"没有可比的历史日子"。<b>备注</b>提醒数字可能不可靠：同类样本少于 20 天写"样本少，参考性弱"；近月或下月当天成交少于 100 手写"成交少，价差可能失真"；原油等品种离停止交易只剩 5 个交易日以内写"临近到期"。</p>
+  <div class="key"><b>小例子：</b>同类区间是 1~4 元，今天价差 5 元，高过上沿，判断"偏高"。但如果今天只成交了 30 份约定，备注就会写"成交少"：几个人随便报个价就能把价差带偏，这个"偏高"要打个问号。</div>
+  <div class="unk"><div class="lbl">提醒</div><p>判断是历史统计，不是预测。行情环境变了，区间也会失效。</p></div>
+</section>
+
+<!-- ============ 第五篇 ============ -->
+<div class="part" id="v5">
+  <div class="tag">第五篇 · 影响因素标签页</div>
+  <h2>影响因素</h2>
+</div>
+
+<section class="s" id="c31">
+  <h3>31. 因素：公共因素、专属因素</h3>
+  <p>因素是可能影响价差的一类事情，每个因素有一组搜索词，脚本按它去搜新闻。<b>公共因素</b>影响多个品种（宏观、政策、地缘，比如美联储利率、关税、中东局势）；<b>专属因素</b>只影响一两个品种，按类别分成供给、需求、库存、成本等（比如铜矿罢工、钢厂限产）。因素清单在"因素清单.json"里，想加因素就往里加。</p>
+  <div class="key"><b>小例子：</b>"学校规定所有小卖部都要涨房租"会影响苹果、橘子、香蕉，是公共因素；"苹果园下了冰雹"只影响苹果，是专属因素，类别是"供给"。</div>
+</section>
+
+<section class="s" id="c32">
+  <h3>32. 通常怎么影响价差</h3>
+  <p>每个因素下面写的"通常怎么影响价差"，是行业里常见的说法，<b>没经过验证</b>，不同时期可能不灵。复盘（第 35 条）就是用来检验它们灵不灵的。</p>
+  <div class="key"><b>小例子：</b>大家都说"冰雹 → 眼前的苹果少了 → 近月变贵、价差变大"。这只是常识推理，真遇上冰雹那年，如果大家早就囤好了苹果，价差也可能纹丝不动。</div>
+</section>
+
+<section class="s" id="c33">
+  <h3>33. AI 解读：小结、指向</h3>
+  <p>紫色部分是 AI 写的。<b>小结</b>：价差现在多少、最近怎么变、跟哪件事有关。<b>指向</b>只有三种：价差变大、价差变小、不明确，意思是这件事<b>通常</b>把价差往哪边推。它是机制判断，不是预测；看不出来就写"不明确"。价差、变化这两列是脚本算的，跟小结对不上时以脚本为准。</p>
+  <div class="key"><b>小例子：</b>新闻说"苹果产区冰雹，三成苹果摔坏"。AI 的条目写：眼前的苹果变少，通常让近月偏紧，指向"价差变大"。另一条新闻"苹果包装箱涨价"跟近月远月都有关，看不出偏向哪边，指向"不明确"。</div>
+</section>
+
+<section class="s" id="c34">
+  <h3>34. 长期事件</h3>
+  <p>持续几周以上、会反复影响价差的大事，比如战争、制裁、罢工、矿山长期停产、限产政策。状态只有三种：<b>进行中、缓和、已结束</b>。结束的事件只改状态，不删除，方便以后回头查。每个事件至少附一条带链接的新闻。</p>
+  <div class="key"><b>小例子：</b>"苹果主产区连续三个月干旱"写进长期事件，状态"进行中"。下了两场雨，改成"缓和"；旱情彻底解除，改成"已结束"，但这一条留着。</div>
+</section>
+
+<section class="s" id="c35">
+  <h3>35. 复盘</h3>
+  <p>每次 AI 写的"指向"都会存档，等过了 5 个和 20 个交易日，对照价差后来真实的变化，看说对了没有。时间不够的还不能对答案。报告在"复盘"文件夹里。</p>
+  <div class="key"><b>小例子：</b>10 月 18 号 AI 说"冰雹 → 价差变大"，当时价差 +2 元。5 个交易日后价差变成 +4 元，这一条算对；20 个交易日后掉回 +1 元，这一条算错。攒多了，就知道哪类因素的说法比较靠谱。</div>
+</section>
+
+<section class="s" id="c36">
+  <h3>36. 新闻搜索的"按时间只翻到……"提示</h3>
+  <p>新闻搜索最多给 1000 条结果。搜索词太常见时，1000 条可能只覆盖最近两三天，网页会写"按时间只翻到 X"，表示更早的新闻可能漏了，<b>不代表没发生事</b>。脚本已经按相关度补搜过一次。</p>
+  <div class="key"><b>小例子：</b>在图书馆电脑上搜"苹果"，最多只显示 1000 本书，结果全是最近三天上架的。不代表上个月没进过讲苹果的书，只是搜索框装不下了。</div>
+</section>
+
+<footer>
+  <div>定义来源：output/仓储速览.html 里的说明文字、本文件夹的 AGENTS.md，以及 futures_brief.py 里的规则（风险提示阈值 RISK_RULES、跨月价差规则 SPREAD_RULES、每手数量 LOT_SIZE）。</div>
+  <div>例子里的苹果、人名和数字都是编的，只为讲清概念；真实数字以网页和脚本输出为准。</div>
+</footer>
+</div>
+</body>
+</html>
