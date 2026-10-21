@@ -67,6 +67,7 @@ python futures_brief.py review             复盘：AI 解读说的价差方向�
 | `复盘/` | `复盘报告.html` / `.md`：AI 解读的对答案结果；`存档/`：每次 AI 解读和长期事件的备份（按更新时间分文件夹） |
 | `AGENTS.md` | 给 AI 助手看的操作说明 |
 | `CLAUDE.md`、`.claude/` | 让 Claude Code 也能读到上面的说明，并提供 `/futures-brief` 命令 |
+| `开盘tick/` | 每天 21:03、9:03 自动取开盘前后一分钟的 0.5 秒快照（任务计划「开盘tick取数」），数据在 `开盘tick/数据/`；顺带取休市期间的外盘涨跌（`外盘涨跌.csv`）。和上面不同，它要装天勤 TqSdk，详见 `开盘tick/说明.md` |
 | `output/` | 所有结果；`output/缓存/` 存下载过的历史报表；`output/因素/AI解读.json`、`长期事件.json` 是 AI 写的 |
 
 如果交易所网站改版导致取不到数据，脚本会直接报错，不会给出错误的数字。
