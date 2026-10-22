@@ -58,6 +58,7 @@ DAY_MIN = 20  # 日盘攒够 20 次才单独算系数，之前借夜盘的
 WEEK = "一二三四五六日"
 REC_COLS = ["开盘", "场次", "星期", "组合", "品种", "腿1", "腿2", "腿1相对主力", "腿1昨收", "腿2昨收", "昨收价差",
             "腿1竞价", "腿2竞价", "腿1竞价手数", "腿2竞价手数", "针", "针变化", "腿1跳空", "主力跳空", "针方向",
+            "针真假", "针偏几档", "首笔偏几档", "腿1竞价占持仓‰", "腿1竞价持仓变化",
             "首笔秒", "首笔价差", "首笔变化", "首笔方向", "价差1秒", "价差5秒", "价差30秒", "价差60秒",
             "首分钟买价差最低", "首分钟卖价差最高", "外盘涨跌%", "外盘方向", "分档", "外盘时段", "外盘来源",
             "腿1预估", "腿2预估", "预测区间", "预测方向", "预估误差", "在范围内", "仓储提示", "长期事件",
@@ -68,8 +69,18 @@ HIDDEN_COLS = PCT_COLS + ["预估下沿", "预估上沿", "主力在范围内"] 
 OUT_COLS = ["开盘", "场次", "星期", "组合", "品种", "腿1", "腿2",
             "昨收价差", "针", "外盘涨跌%",
             "首笔价差", "首笔变化", "首笔方向", "价差1秒", "价差5秒", "价差30秒", "价差60秒", "首分钟买价差最低", "首分钟卖价差最高",
-            "腿1竞价", "腿2竞价", "腿1竞价手数", "腿2竞价手数", "腿1跳空", "主力跳空"]
+            "腿1竞价", "腿2竞价", "腿1竞价手数", "腿2竞价手数", "腿1跳空", "主力跳空",
+            "针真假", "针偏几档", "首笔偏几档", "腿1竞价占持仓‰", "腿1竞价持仓变化"]
 OUT_COLS += [c for c in REC_COLS if c not in OUT_COLS and c != "针变化"]
+# 针真不真（小草定的，2026-10-22）：首笔真实成交相对昨收价差偏出这么多档（最小变动价位）才算有动静
+NEEDLE_GATE = {"sc": 15, "fu": 20, "bu": 20, "ag": 10, "cu": 6, "sp": 5, "nr": 5, "br": 5, "ru": 5, "ss": 5,
+               "ao": 5, "hc": 5, "rb": 5, "al": 5, "pb": 5, "zn": 5}
+# 收盘价.csv 没记最小变动价位时用这个
+TICK = {"sc": 0.1, "fu": 1, "bu": 1, "ag": 1, "au": 0.02, "cu": 10, "sp": 2, "nr": 5, "br": 5, "ru": 5, "ss": 5,
+        "ao": 1, "hc": 1, "rb": 1, "al": 5, "pb": 5, "zn": 5, "ni": 10, "sn": 10, "lu": 1}
+# 腿1竞价占持仓的分档（‰）：10-22 从 3 次开盘看出来的，只是临时的线，攒多了再调
+RATIO_BINS = [(0.7, "0.7‰ 以下"), (1.5, "0.7–1.5‰"), (math.inf, "1.5‰ 以上")]
+TRUTHS = ("真", "半真", "假", "反向", "没针")
 COEF_COLS = ["品种", "开盘时间", "场次", "主力", "昨收", "开盘价", "国内跳空%", "外盘涨跌%", "外盘时段", "来源"]
 
 
@@ -137,6 +148,28 @@ def side(change, move) -> str:
     if abs(c) < 1e-9:
         return "不变"
     return "同向" if (c > 0) == (m > 0) else "反向"
+
+
+def needle_truth(dev, first, gate) -> str:
+    """dev = 针比昨收价差偏几档，first = 首笔真实成交比昨收价差偏几档，gate = 这个品种的门槛（档）。
+    真 = 首笔开在针的位置（离针 1 档以内，或比针走得还远）；半真 = 首笔偏出门槛、但比针小；
+    假 = 首笔在门槛以内（几乎没动）；反向 = 首笔往针的反方向偏出门槛；没针 = 针本身没偏出门槛，不评。"""
+    if gate is None or dev is None or first is None:
+        return ""
+    d, m = (int(math.copysign(math.floor(abs(x) + 0.5), x)) for x in (dev, first))  # 首笔是半秒成交均价，四舍五入到整档
+    if abs(d) < gate:
+        return "没针"
+    m = m if d > 0 else -m
+    if m >= abs(d) - 1:
+        return "真"
+    if m >= gate:
+        return "半真"
+    return "反向" if m <= -gate else "假"
+
+
+def ratio_bin(x) -> str:
+    v = num(x)
+    return "" if v is None else next(lab for hi, lab in RATIO_BINS if v < hi)
 
 
 def read_csv(f: Path):
@@ -237,7 +270,8 @@ def load_closes(folder: Path, fc) -> dict:
     df = read_csv(folder / "收盘价.csv")
     if df is not None:
         for _, r in df.iterrows():
-            out[r["合约"]] = {"收盘价": num(r["收盘价"]), "收盘时间": r.get("收盘时间"), "到期日": r.get("到期日")}
+            out[r["合约"]] = {"收盘价": num(r["收盘价"]), "收盘时间": r.get("收盘时间"), "到期日": r.get("到期日"),
+                              "最小变动价位": num(r.get("最小变动价位"))}
     if fc is not None:
         for _, r in fc.iterrows():
             for leg in ("腿1", "腿2"):
@@ -299,6 +333,11 @@ def analyze(folder: Path, open_ts: datetime, s1: str, s2: str, closes: dict, fc)
     a1, a2 = auction(l1), auction(l2)
     if a1 is not None:
         rec |= {"腿1竞价": a1["最新价"], "腿1竞价手数": int(a1["成交手数"])}
+        oi, chg = num(a1.get("持仓量")), num(a1.get("持仓变化"))
+        if oi is not None and chg is not None:
+            rec["腿1竞价持仓变化"] = int(chg)  # 负的 = 竞价里平仓比开仓多
+            if oi - chg > 0:
+                rec["腿1竞价占持仓‰"] = round(a1["成交手数"] / (oi - chg) * 1000, 2)  # 开盘前的持仓 = 竞价后持仓 − 持仓变化
         if c1 is not None:
             rec["腿1跳空"] = round(a1["最新价"] - c1, 4)
             rec["腿1跳空%"] = round((a1["最新价"] / c1 - 1) * 100, 4)
@@ -327,6 +366,17 @@ def analyze(folder: Path, open_ts: datetime, s1: str, s2: str, closes: dict, fc)
         m = after[after.index <= o + pd.Timedelta(seconds=60)]
         if len(m):
             rec |= {"首分钟买价差最低": round(m["买价差"].min(), 4), "首分钟卖价差最高": round(m["卖价差"].max(), 4)}
+    tick = closes.get(s1, {}).get("最小变动价位") or TICK.get(p)
+    if tick:
+        if "针变化" in rec:
+            rec["针偏几档"] = round(rec["针变化"] / tick, 1)
+        if "首笔变化" in rec:
+            rec["首笔偏几档"] = round(rec["首笔变化"] / tick, 1)
+    if "针偏几档" in rec and "首笔偏几档" in rec:
+        if p in NEEDLE_GATE:
+            rec["针真假"] = needle_truth(rec["针偏几档"], rec["首笔偏几档"], NEEDLE_GATE[p])
+        else:
+            notes.append(f"{p} 还没定针的门槛，不判断真假")
     rec |= overseas_saved(folder, p, open_ts)
     if fc is not None:  # 预估.csv 里记的外盘涨跌就是预估时用的，优先用它
         r = fc[fc["组合"] == rec["组合"]]
@@ -562,6 +612,29 @@ def rule_monday(rec: pd.DataFrame) -> str:
     return table(["", "次数", "主力跳空中位（%，绝对值）", "针变化中位（元，绝对值）", "第一次成交变化中位（元）", "样本"], rows)
 
 
+def rule_ratio(rec: pd.DataFrame) -> str:
+    """规则四：腿1竞价占持仓越高，针越可能真或半真。每个品种、每档数真 / 半真 / 假 / 反向（没针的另列，不算比例）。"""
+    s = rec[rec["针真假"].isin(TRUTHS)].copy()
+    if not len(s):
+        return "<p>还没有判断过真假的开盘。</p>"
+    s["占持仓档"] = s["腿1竞价占持仓‰"].map(ratio_bin)
+    rows = []
+    for p in ["全部"] + sorted(s["品种"].unique()):
+        g = s if p == "全部" else s[s["品种"] == p]
+        for _, lab in RATIO_BINS:
+            h = g[g["占持仓档"] == lab]
+            if not len(h):
+                continue
+            c = {k: int((h["针真假"] == k).sum()) for k in TRUTHS}
+            judged = c["真"] + c["半真"] + c["假"] + c["反向"]
+            good = f"{(c['真'] + c['半真']) / judged * 100:.0f}%" if judged else ""
+            dec = int((h[h["针真假"].isin(["假", "反向"])]["腿1竞价持仓变化"] < 0).sum())
+            rows.append([p, lab, c["真"], c["半真"], c["假"], c["反向"], good, dec, c["没针"],
+                         small(h["开盘"].nunique()) if judged else ""])
+    return table(["品种", "腿1竞价占持仓", "真", "半真", "假", "反向", "真+半真占比", "假/反向里竞价后持仓减少", "没针（不评）",
+                  "样本"], rows)
+
+
 def accuracy(rec: pd.DataFrame) -> str:
     s = rec.dropna(subset=["预估误差"])
     rows = []
@@ -657,9 +730,11 @@ def latest_table(g: pd.DataFrame) -> str:
         rows.append([r["组合"], move_cell(r), fmt(r["昨收价差"], 2), fmt(r["针"], 2), colored(r["针变化"], 2), r["针方向"],
                      fmt(r["首笔价差"], 2), colored(r["首笔变化"], 2), r["首笔方向"], fmt(r["首笔秒"], 1),
                      fmt(r["价差5秒"], 2), fmt(r["价差60秒"], 2), fmt(r["首分钟买价差最低"], 2), fmt(r["首分钟卖价差最高"], 2),
-                     colored(r["腿1跳空"], 2), colored(r["主力跳空"], 2), r["备注"]])
+                     colored(r["腿1跳空"], 2), colored(r["主力跳空"], 2), r["针真假"], fmt(r["腿1竞价占持仓‰"], 2),
+                     r["备注"]])
     return table(["组合", "外盘", "昨收价差", "针", "针变化", "针方向", "第一次真实成交", "变化", "方向", "开盘后几秒",
-                  "5 秒", "60 秒", "第一分钟买价差最低", "卖价差最高", "腿1跳空", "主力跳空", "备注"], rows)
+                  "5 秒", "60 秒", "第一分钟买价差最低", "卖价差最高", "腿1跳空", "主力跳空", "针真假", "腿1竞价占持仓‰",
+                  "备注"], rows)
 
 
 def write_page(rec: pd.DataFrame) -> None:
@@ -682,7 +757,9 @@ def write_page(rec: pd.DataFrame) -> None:
         body.append(f"<h2>最近一次开盘：{last}（{g['场次'].iloc[0]}，星期{g['星期'].iloc[0]}）</h2>"
                     f"<p class='note'>{esc(ovs or '这次没有外盘数据')}{more}</p>"
                     "<p class='note'>针 = 竞价那张快照两腿的价差；变化都是相对昨收价差。"
-                    "第一次真实成交 = 开盘后两腿第一次在同一个半秒都有成交，那半秒的均价价差。</p>" + latest_table(g))
+                    "第一次真实成交 = 开盘后两腿第一次在同一个半秒都有成交，那半秒的均价价差。"
+                    "针真假（小草定的）：真 = 首笔开在针的位置；半真 = 首笔比昨收偏出门槛、但比针小；假 = 首笔几乎没动；"
+                    "没针 = 针本身没偏出门槛。</p>" + latest_table(g))
         fc = g.dropna(subset=["腿2预估"]).drop_duplicates("品种")
         if len(fc):
             out = ("<p class='note'>超出八成范围的，先看这次的预估页里当晚的新闻、仓储提示有没有线索。</p>"
@@ -703,6 +780,15 @@ def write_page(rec: pd.DataFrame) -> None:
                 + rule_fu(rec) + "</div>")
     body.append("<div class='card'><h3>规则三：周一大概率开盘会有东西</h3>"
                 "<p class='note'>周一早上 9:00 开盘（周末之后）对比其他日盘开盘。</p>" + rule_monday(rec) + "</div>")
+    gates = "、".join(f"{k} {v}" for k, v in NEEDLE_GATE.items())
+    body.append("<div class='card'><h3>规则四：腿1竞价成交占持仓越多，针越可能真</h3>"
+                "<p class='note'>看开盘第一笔真实成交（小草定的）：真 = 开在针的位置（离针 1 档以内或更远）；"
+                "半真 = 比昨收价差偏出门槛、但比针小（照样能接到）；假 = 门槛以内、几乎没动；反向 = 往针的反方向偏出门槛；"
+                f"没针 = 针本身没偏出门槛，不评。门槛（档）：{gates}。"
+                "腿1竞价占持仓 = 腿1竞价成交手数 ÷ 开盘前腿1持仓（千分之几），不同品种一手大小不同，所以比比例不比手数；"
+                "分档的线（0.7‰、1.5‰）是 10-22 从 3 次开盘看出来的临时线。"
+                "竞价后持仓减少 = 竞价里平仓比开仓多，10-22 夜盘 fu2702 竞价 3054 手却是假针，持仓少了 2994 手。</p>"
+                + rule_ratio(rec) + "</div>")
     body.append("<h2>涨跌幅统计</h2><p class='note'>每次开盘、每个品种算一次。外盘涨跌 = 国内收盘 → 开盘前 7 分钟；"
                 "主力跳空 = 主力（腿2）竞价价对昨收；国内跟了几成 = 主力跳空 ÷ 外盘涨跌的中位数（外盘不到 0.3% 的不算）。"
                 "右边的两年回测是 2024-05 起的夜盘开盘（日线开盘价，外盘算到 21:00），只当对照。</p>" + move_stats(rec))
@@ -712,10 +798,10 @@ def write_page(rec: pd.DataFrame) -> None:
         recent = rec[rec["开盘"].isin(sorted(rec["开盘"].unique())[-20:])].sort_values(["开盘", "组合"], ascending=[False, True])
         body.append("<h2>最近 20 次开盘明细</h2>" + table(
             ["开盘", "场次", "组合", "外盘", "昨收价差", "针变化", "针方向", "第一次成交变化", "方向", "腿1跳空", "主力跳空",
-             "标签", "预估页"],
+             "针真假", "腿1竞价占持仓‰", "标签", "预估页"],
             [[r["开盘"], r["场次"], r["组合"], move_cell(r), fmt(r["昨收价差"], 2),
               colored(r["针变化"], 2), r["针方向"], colored(r["首笔变化"], 2), r["首笔方向"], colored(r["腿1跳空"], 2),
-              colored(r["主力跳空"], 2), tags(r),
+              colored(r["主力跳空"], 2), r["针真假"], fmt(r["腿1竞价占持仓‰"], 2), tags(r),
               Raw(f"<a href='{forecast_link(r['开盘'])}'>看</a>") if forecast_link(r["开盘"]) else ""]
              for _, r in recent.iterrows()]))
     PAGE.write_text(page("开盘复盘", "".join(body)), encoding="utf-8")
