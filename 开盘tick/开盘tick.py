@@ -6,7 +6,8 @@
 
 平时不用手动跑：Windows 任务计划「开盘tick取数」每天 21:03、9:03 自动运行，
 那时电脑没开的话，开机登录后会马上补跑。说明见同目录「说明.md」。
-跑完会顺带取休市期间的外盘涨跌（同目录「外盘涨跌.py」），存进同一个开盘文件夹。
+跑完会顺带取休市期间的外盘涨跌（同目录「外盘涨跌.py」），存进同一个开盘文件夹，
+再把每个开盘文件夹的昨收价存成「收盘价.csv」，最后跑开盘复盘（「开盘复盘.py」）。
 
 账号：读 ~/.tqsdk_auth.json（不在本文件夹，不会上传），格式 {"user": "...", "password": "..."}。
 
@@ -43,8 +44,11 @@ import pandas as pd  # noqa: E402
 from tqsdk import TqApi, TqAuth  # noqa: E402
 
 import 外盘涨跌  # noqa: E402  休市期间的外盘涨跌，跟开盘 tick 一起取
+import 开盘复盘  # noqa: E402  开盘那一针记一行、对答案、出记分卡
 
 OPENS = ["21:00:00", "09:00:00"]  # 夜盘、日盘开盘；竞价那张快照在开盘前一分钟内
+CLOSE_HEAD = ["合约", "收盘价", "收盘时间", "到期日", "最小变动价位", "合约乘数"]
+SESSION_ENDS = {"15:00", "23:00", "01:00", "02:30"}  # 收盘之后才到的那根 1 分钟线，时间就是收盘时刻
 COLS = {"last_price": "最新价"}
 for _i, _n in enumerate("一二三四五", start=1):  # 五档盘口；上期所、能源中心有五档，大商所、郑商所只有一档、其余为空
     COLS |= {f"bid_price{_i}": f"买{_n}价", f"bid_volume{_i}": f"买{_n}量",
@@ -123,13 +127,60 @@ def fetch(api: TqApi, symbol: str) -> pd.DataFrame:
     return df[list(COLS)].rename(columns=COLS)
 
 
+def minute_klines(api: TqApi, symbol: str, length: int = 10000) -> pd.DataFrame:
+    """1 分钟线（时间是这一分钟开始的时刻，北京时间）。免费版最多 10000 根，活跃合约约两三周。"""
+    k = api.get_kline_serial(symbol, 60, data_length=length)
+    k = k[k["datetime"] > 0].dropna(subset=["close"]).copy()
+    k.index = pd.DatetimeIndex(pd.to_datetime(k["datetime"].astype("int64"), utc=True)).tz_convert("Asia/Shanghai").tz_localize(None)
+    return k[["close", "volume"]]
+
+
+def close_before(k: pd.DataFrame, open_ts, now=None):
+    """open_ts 这次开盘之前国内最后一次收盘：(收盘价, 收盘时刻)。
+    = 开盘前 60 秒以前的最后一根 1 分钟线（竞价那根不算）；now 是回放用的「现在」，还没走完的分钟线不算。"""
+    w = k[k.index < pd.Timestamp(open_ts) - pd.Timedelta(60, unit="s")]
+    if now is not None:
+        w = w[w.index + pd.Timedelta(60, unit="s") <= pd.Timestamp(now)]
+    if not len(w):
+        return None
+    t = w.index[-1]
+    end = t if t.strftime("%H:%M") in SESSION_ENDS else t + pd.Timedelta(60, unit="s")
+    return float(w["close"].iloc[-1]), end.to_pydatetime()
+
+
+def contract_info(api: TqApi, symbol: str) -> dict:
+    q = api.get_quote(symbol)
+    ex = datetime.fromtimestamp(q.expire_datetime) if q.expire_datetime == q.expire_datetime and q.expire_datetime else None
+    return {"到期日": f"{ex:%Y-%m-%d}" if ex else "", "最小变动价位": q.price_tick, "合约乘数": q.volume_multiple}
+
+
+def save_closes(info: dict, out: Path) -> None:
+    """每个开盘文件夹存一份「收盘价.csv」：文件夹里有 tick 的合约，开盘前国内最后一次收盘的价。
+    已经记过的合约不再改；1 分钟线够得着的旧文件夹也补上。"""
+    for folder in sorted(out.glob("????-??-??_????")):
+        open_ts = datetime.strptime(folder.name, "%Y-%m-%d_%H%M")
+        f = folder / "收盘价.csv"
+        rows = 外盘涨跌.read_rows(f) if f.exists() else []
+        have = {r["合约"] for r in rows}
+        new = []
+        for s, (k, extra) in info.items():
+            if s in have or not (folder / f"{s}.csv").exists():
+                continue
+            c = close_before(k, open_ts)
+            if c:
+                new.append({"合约": s, "收盘价": c[0], "收盘时间": f"{c[1]:%Y-%m-%d %H:%M}"} | extra)
+        if new:
+            外盘涨跌.write_rows(f, CLOSE_HEAD, rows + new)
+            print(f"收盘价 {folder.name}：补了 {len(new)} 个合约")
+
+
 def save_ticks(items: list[str], seconds: int, out: Path) -> None:
     # 「腿1,腿2」是一组价差，单独写的是单个合约
     pairs = [tuple(x.split(",")) for x in items if "," in x]
     symbols = list(dict.fromkeys([s for pr in pairs for s in pr] + [x for x in items if "," not in x]))
 
     api = connect()
-    data = {}
+    data, info = {}, {}
     try:
         # 先对交易所合约清单：代码写错或已到期时 get_tick_serial 会让整个连接卡住
         valid = set()
@@ -140,6 +191,11 @@ def save_ticks(items: list[str], seconds: int, out: Path) -> None:
                 data[s] = fetch(api, s)
             else:
                 print(f"{s}: 交易所没有这个合约（写错了或已到期），跳过。请改「合约.txt」")
+        for s in data:  # 昨收价从 1 分钟线取（tick 只能往回 80 分钟，1 分钟线能往回两三周，旧文件夹也补得上）
+            try:
+                info[s] = (minute_klines(api, s), contract_info(api, s))
+            except Exception as e:
+                print(f"{s}: 1 分钟线没取到（{type(e).__name__} {e}），这次不存昨收价")
     finally:
         api.close()
 
@@ -169,6 +225,8 @@ def save_ticks(items: list[str], seconds: int, out: Path) -> None:
             note = "" if whole else "，⚠ 不完整"
             print(f"价差 {s1}-{s2} {open_ts:%m-%d %H:%M}：{save(w, out / f'{open_ts:%Y-%m-%d_%H%M}' / f'价差_{s1}-{s2}.csv')}{note}")
 
+    save_closes(info, out)
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -181,7 +239,8 @@ def main():
     try:
         save_ticks(args.symbols or read_list(), args.seconds, out)
     finally:
-        外盘涨跌.run(out)  # 只用东方财富的公开数据，跟天勤无关：天勤那边出错也照样取
+        外盘涨跌.run(out)  # 只用东方财富（备用雅虎、新浪）的公开数据，跟天勤无关：天勤那边出错也照样取
+        开盘复盘.run(out)  # 只读「数据/」里的文件，出错只打印
         print(f"===== {datetime.now():%H:%M:%S} 结束 =====")
 
 
