@@ -899,7 +899,8 @@ def trend_to_markdown(trend: dict, wanted: list[str]) -> str:
         f"周度库存回看期增幅超过 {R['周区间增_提示']}%。",
         "- 回看期内一直是 0 的品种不提示。数量本身很小的品种（如几百吨），百分比会被放大，请结合绝对数量看。",
         f"- 近月覆盖率（只看 {'、'.join(SPREAD_CODES)}）：覆盖率 = 仓单（换算成手）÷ 近月合约持仓，"
-        f"跟过去几年每月同一时段（月内日期前后 {SPREAD_RULES['日期邻域']} 天，不含本月）的日子比；"
+        f"跟过去几年每月同一时段（月内日期前后 {SPREAD_RULES['日期邻域']} 天，不含本月；"
+        f"{'、'.join(MAIN_MONTHS)} 按离近月交割月的天数前后 {SPREAD_RULES['日期邻域']} 天）的日子比；"
         f"比 {100 - R['覆盖率同期_高']}% 的同期日子都低 →【高】，比 {100 - R['覆盖率同期_中']}% 都低 →【中】。"
         f"覆盖率在 {R['覆盖率_上限']}% 以上、或同期样本少于 {SPREAD_RULES['最少样本']} 天时不提示。"
         "需要先运行过一次 python futures_brief.py spread。",
@@ -994,10 +995,17 @@ def trend_to_html_section(trend: dict) -> str:
 # ---------------------------------------------------------------- 跨月价差参考（仓单覆盖率 × 历史百分位）
 
 # 做跨月价差统计的品种（用户指定）
-SPREAD_CODES = ["au", "al", "ao", "rb", "hc", "pb", "zn", "sn", "cu", "nr", "br"]
+SPREAD_CODES = ["au", "al", "ao", "rb", "hc", "ru", "pb", "zn", "sn", "cu", "nr", "br"]
 # 每手数量和单位，取自上期所官网 product_config.dat 的 contract_number / unit_cn
 LOT_SIZE = {"au": (1000, "克"), "al": (5, "吨"), "ao": (20, "吨"), "rb": (10, "吨"), "hc": (10, "吨"),
-            "pb": (5, "吨"), "zn": (5, "吨"), "sn": (1, "吨"), "cu": (5, "吨"), "nr": (10, "吨"), "br": (5, "吨")}
+            "ru": (10, "吨"), "pb": (5, "吨"), "zn": (5, "吨"), "sn": (1, "吨"), "cu": (5, "吨"), "nr": (10, "吨"), "br": (5, "吨")}
+# 这几个品种只有 1、5、10 月（天然橡胶 1、5、9 月）的合约成交活跃（用户指定）：近月 / 下月从这几个月份里取，
+# 如 10 月份时是 2701 / 2705；「同类日子」按离近月交割月还有几天来找，不按月内日期
+MAIN_MONTHS = {"rb": (1, 5, 10), "hc": (1, 5, 10), "ru": (1, 5, 9)}
+# 这两个品种跳过当前月份之后的第一个月：近月 / 下月 = 往后第 2、3 个月（如 10 月份时是 2612 / 2701；用户指定）
+PAIR_AHEAD = {"nr": (2, 3), "br": (2, 3)}
+# 这些品种的价差用「下月 − 近月」（远减近；用户指定），其余品种是「近月 − 下月」
+FAR_MINUS_NEAR = {"rb", "hc", "ru", "nr", "br"}
 CODE_TO_NAME = {code: name for name, code in PRODUCT_CODES.items()}
 SPREAD_RULES = {
     "百分位邻域": 10,  # 覆盖率历史百分位上下 10 个百分点以内算"同样的百分位"
@@ -1007,6 +1015,7 @@ SPREAD_RULES = {
 }
 HISTORY_DIR = CACHE / "历史"
 SPREAD_SUMMARY = CACHE / "价差历史汇总.json"
+SPREAD_SUMMARY_CODES = CACHE / "价差历史汇总_品种.txt"  # 汇总里存了哪些品种；品种变了要重算（只读本地缓存）
 SHFE_OLD_STOCK_URL = "https://www.shfe.com.cn/data/tradedata/future/dailydata/{date}dailystock.dat"
 SHFE_KX_URL = "https://www.shfe.com.cn/data/tradedata/future/dailydata/kx{date}.dat"
 NEW_FORMAT_FROM = dt.date(2025, 11, 1)  # 大约从这时起仓单日报换成新格式，之前是旧格式
@@ -1104,6 +1113,11 @@ def update_spread_history(latest: dt.date, years: int) -> dict[str, dict]:
     summary: dict[str, dict | None] = {}
     if SPREAD_SUMMARY.exists():
         summary = json.loads(SPREAD_SUMMARY.read_text(encoding="utf-8"))
+    codes_key = ",".join(sorted(LOT_SIZE))
+    old_codes = SPREAD_SUMMARY_CODES.read_text(encoding="utf-8").strip() if SPREAD_SUMMARY_CODES.exists() else ""
+    if summary and old_codes != codes_key:
+        log("  品种有变化，按本地缓存重算价差历史汇总……")
+        summary = {k: v for k, v in summary.items() if v is None}
     start = latest - dt.timedelta(days=round(365.25 * years))
     days = [start + dt.timedelta(days=i) for i in range((latest - start).days + 1)]
     todo = [d for d in days if is_trading_day(d) and d.strftime("%Y%m%d") not in summary]
@@ -1127,6 +1141,7 @@ def update_spread_history(latest: dt.date, years: int) -> dict[str, dict]:
                 log(f"    进度 {i}/{len(todo)}")
                 write_text(SPREAD_SUMMARY, json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
     write_text(SPREAD_SUMMARY, json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
+    write_text(SPREAD_SUMMARY_CODES, codes_key)
     if failed:
         log(f"  ⚠ 有 {failed} 天因为网络问题没取到，下次运行会自动补")
     return {k: v for k, v in summary.items() if v and start <= parse_date(k) <= latest}
@@ -1138,6 +1153,46 @@ def month_code(d: dt.date, ahead: int) -> str:
     return f"{(d.year + m // 12) % 100:02d}{m % 12 + 1:02d}"
 
 
+def spread_pair(code: str, d: dt.date) -> tuple[str, str]:
+    """d 这天用来算跨月价差的近月、下月。MAIN_MONTHS 里的品种只在活跃月份里取（2026-10 → 2701 / 2705）。"""
+    months = MAIN_MONTHS.get(code)
+    if not months:
+        a, b = PAIR_AHEAD.get(code, (1, 2))
+        return month_code(d, a), month_code(d, b)
+    picks = []
+    ahead = 0
+    while len(picks) < 2:
+        ahead += 1
+        mc = month_code(d, ahead)
+        if int(mc[2:]) in months:
+            picks.append(mc)
+    return picks[0], picks[1]
+
+
+def spread_phase(code: str, d: dt.date, near: str) -> int:
+    """找「同类日子」用的时段：普通品种 = 月内日期；MAIN_MONTHS 品种 = 离近月交割月 1 号还有几天。"""
+    if code not in MAIN_MONTHS:
+        return d.day
+    return (dt.date(2000 + int(near[:2]), int(near[2:]), 1) - d).days
+
+
+def phase_text(code: str, cur: dict) -> str:
+    if code not in MAIN_MONTHS:
+        return f"过去每月 {cur['date'].day} 号前后 {SPREAD_RULES['日期邻域']} 天"
+    return (f"过去离近月交割月同样远（今天距 {code}{cur['near']} 交割月还有 {cur['phase']} 天）"
+            f"前后 {SPREAD_RULES['日期邻域']} 天")
+
+
+def pair_spread(code: str, near: float, far: float) -> float:
+    return far - near if code in FAR_MINUS_NEAR else near - far
+
+
+def pair_text(code: str, cur: dict) -> str:
+    """价差的算法，如「cu2611 − cu2612」「rb2705 − rb2701」。"""
+    a, b = (cur["far"], cur["near"]) if code in FAR_MINUS_NEAR else (cur["near"], cur["far"])
+    return f"{code}{a} − {code}{b}"
+
+
 def spread_rows(history: dict[str, dict], code: str) -> list[dict]:
     lot, lot_unit = LOT_SIZE[code]
     rows = []
@@ -1146,12 +1201,14 @@ def spread_rows(history: dict[str, dict], code: str) -> list[dict]:
         if not day:
             continue
         d = parse_date(ds)
-        row = {"date": d, "near": month_code(d, 1), "far": month_code(d, 2), "warrant": day["w"], "unit": day["unit"]}
+        near, far = spread_pair(code, d)
+        row = {"date": d, "near": near, "far": far, "phase": spread_phase(code, d, near),
+               "warrant": day["w"], "unit": day["unit"]}
         row["lots"] = day["w"] * (1000 if day["unit"] == "千克" and lot_unit == "克" else 1) / lot
         qn, qf = day["q"].get(row["near"]), day["q"].get(row["far"])
         if qn and qf and qn[0] and qf[0]:
             row.update(near_settle=qn[0], far_settle=qf[0], near_oi=qn[1], near_vol=qn[2], far_vol=qf[2],
-                       spread=qn[0] - qf[0], spread_pct=(qn[0] - qf[0]) / qf[0] * 100,
+                       spread=pair_spread(code, qn[0], qf[0]), spread_pct=pair_spread(code, qn[0], qf[0]) / qf[0] * 100,
                        coverage=row["lots"] / qn[1] * 100 if qn[1] else None)
         rows.append(row)
     return rows
@@ -1167,10 +1224,9 @@ def percentile(vals: list[float], q: float) -> float:
 def coverage_alerts(code: str, hist: list[dict], cur: dict, res: dict) -> list[tuple[str, str, str]]:
     """近月覆盖率跟过去每月同一时段比：排名越低 = 仓单相对近月持仓越少。"""
     R, S = RISK_RULES, SPREAD_RULES
-    this_month = (cur["date"].year, cur["date"].month)
     same = sorted(r["coverage"] for r in hist
-                  if r["date"] < cur["date"] and (r["date"].year, r["date"].month) != this_month
-                  and abs(r["date"].day - cur["date"].day) <= S["日期邻域"])
+                  if r["date"] < cur["date"] and r["near"] != cur["near"]
+                  and abs(r["phase"] - cur["phase"]) <= S["日期邻域"])
     if len(same) < S["最少样本"]:
         return []
     rank = bisect.bisect_right(same, cur["coverage"]) / len(same) * 100
@@ -1183,7 +1239,7 @@ def coverage_alerts(code: str, hist: list[dict], cur: dict, res: dict) -> list[t
     lower = "比全部同期日子都低" if rank == 0 else f"比 {100 - rank:.0f}% 的同期日子都低"
     return [(lvl, "↓", f"近月覆盖率（{code}{cur['near']}）：{cur['coverage']:.1f}%"
              f"（仓单 {cur['lots']:.0f} 手 ÷ 近月持仓 {fmt_number(cur['near_oi'])} 手），"
-             f"跟过去每月 {cur['date'].day} 号前后 {S['日期邻域']} 天的 {len(same)} 个交易日比，{lower}"
+             f"跟{phase_text(code, cur)}的 {len(same)} 个交易日比，{lower}"
              f"（同期中位数 {res['same_median']:.1f}%）")]
 
 
@@ -1207,12 +1263,12 @@ def analyze_spread(code: str, rows: list[dict]) -> dict:
     for r in hist:
         r["rank"] = bisect.bisect_right(covs, r["coverage"]) / len(covs) * 100
     R = SPREAD_RULES
-    this_month = (cur["date"].year, cur["date"].month)
     # 只看覆盖率：覆盖率排名相近的日子（不管月内日期）；同类 = 在此基础上再要求月内日期相近
+    # （MAIN_MONTHS 品种是离近月交割月的天数相近）。都不含今天这组近月合约的日子（普通品种即本月）
     cov_peers = [r for r in hist
-                 if (r["date"].year, r["date"].month) != this_month
+                 if r["near"] != cur["near"]
                  and abs(r["rank"] - cur["rank"]) <= R["百分位邻域"]]
-    peers = [r for r in cov_peers if abs(r["date"].day - cur["date"].day) <= R["日期邻域"]]
+    peers = [r for r in cov_peers if abs(r["phase"] - cur["phase"]) <= R["日期邻域"]]
     res.update(status="ok", rank=cur["rank"], n_hist=len(hist), peers=peers, cov_peers=cov_peers,
                cov_lo=min(r["coverage"] for r in cov_peers) if cov_peers else None,
                cov_hi=max(r["coverage"] for r in cov_peers) if cov_peers else None)
@@ -1227,10 +1283,11 @@ def analyze_spread(code: str, rows: list[dict]) -> dict:
         to_yuan = lambda p: p / 100 * cur["far_settle"]
         res.update(p10=p10, p50=p50, p90=p90, y10=to_yuan(p10), y50=to_yuan(p50), y90=to_yuan(p90),
                    peer_pos=sum(1 for v in pcts if v < cur["spread_pct"]) / len(pcts) * 100)
+        dear = "下月" if code in FAR_MINUS_NEAR else "近月"
         if cur["spread_pct"] > p90:
-            res["verdict"] = "偏高（近月比历史同类情况更贵）"
+            res["verdict"] = f"偏高（{dear}比历史同类情况更贵）"
         elif cur["spread_pct"] < p10:
-            res["verdict"] = "偏低（近月比历史同类情况更便宜）"
+            res["verdict"] = f"偏低（{dear}比历史同类情况更便宜）"
         else:
             res["verdict"] = "在区间内"
         if len(peers) < R["最少样本"]:
@@ -1282,9 +1339,13 @@ def build_spread(latest: dt.date, years: int) -> tuple[list[dict], dict]:
 
 SPREAD_EXPLAIN = [
     "**覆盖率** = 仓单（换算成手）÷ 近月合约持仓。覆盖率低 = 能交的货相对等着交割的合约少，近月更容易被挤。",
-    "**近月 / 下月**：当前月份之后最近的交割月 / 再往后一个月（如 10 月份时是 2611 / 2612）。合约不存在写 none。",
-    "**价差** = 近月结算价 − 下月结算价。正数 = 近月比下月贵。",
-    "**历史最高 / 最低**：回看期内每天的「近月 − 下月」价差（用当天的近月和下月合约）里最大和最小的一天，括号里是日期。"
+    "**近月 / 下月**：当前月份之后最近的交割月 / 再往后一个月（如 10 月份时是 2611 / 2612）。合约不存在写 none。"
+    "螺纹钢、热轧卷板只在 1、5、10 月合约里取，天然橡胶只在 1、5、9 月合约里取（如 10 月份时是 2701 / 2705）；"
+    "20号胶、丁二烯橡胶跳过最近的一个月，用往后第 2、3 个月（如 10 月份时是 2612 / 2701）；"
+    "这三个品种的「月内日期相近」换成「离近月交割月的天数相近」。",
+    "**价差** = 近月结算价 − 下月结算价，正数 = 近月比下月贵；螺纹钢、热轧卷板、天然橡胶、20号胶、丁二烯橡胶反过来用"
+    "下月结算价 − 近月结算价（远减近），正数 = 下月比近月贵。「价差算法」一列写着每个品种怎么减。",
+    "**历史最高 / 最低**：回看期内每天的价差（按上面的算法，用当天的近月和下月合约）里最大和最小的一天，括号里是日期。"
     "不同年份价格水平不一样，元数直接比只能大概参考。",
     "**覆盖率排名**：今天的覆盖率在回看期里排第几（20% = 比 80% 的日子都低）。它只说覆盖率，跟价差无关。",
     "**价差在同类中的位置**：现在的价差比多少「同类日子」的价差高。100% = 比所有同类日子都高，0% = 比所有都低。",
@@ -1303,20 +1364,20 @@ def spread_to_markdown(results: list[dict], meta: dict) -> str:
         lines += [f"- 回看期：{span[0]:%Y-%m-%d} ~ {span[1]:%Y-%m-%d}，共 {span[2]} 个交易日（数据来自上期所仓单日报和每日行情）。"]
     R = SPREAD_RULES
     lines += [f"- {t.format(pct=R['百分位邻域'], day=R['日期邻域'])}" for t in SPREAD_EXPLAIN] + [""]
-    lines += ["| 品种 | 代码 | 近月/下月 | 仓单(手) | 近月持仓(手) | 覆盖率 | 覆盖率排名 | 现在价差 | 历史最高（日期） | 历史最低（日期） | "
+    lines += ["| 品种 | 代码 | 价差算法 | 仓单(手) | 近月持仓(手) | 覆盖率 | 覆盖率排名 | 现在价差 | 历史最高（日期） | 历史最低（日期） | "
               "价差在同类中的位置 | 历史同类区间（中间80%） | 同类中位数 | 样本天数 | 只看覆盖率的区间（中间80%） | 判断 | 备注 |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         c = r["code"]
         cur = r.get("cur")
         if r["status"] != "ok":
-            pair = f"{c}{cur['near']}/{c}{cur['far']}" if cur else "—"
+            pair = pair_text(c, cur) if cur else "—"
             lines.append(f"| {r['name']} | {c} | {pair} | — | — | — | — | none | {extreme_text(r, 'hist_max')} | "
                          f"{extreme_text(r, 'hist_min')} | — | — | — | — | — | — | {r['status']} |")
             continue
         rng = f"{fmt_price(r['y10'], c, True)} ~ {fmt_price(r['y90'], c, True)}" if "y10" in r else "—"
         lines.append(
-            f"| {r['name']} | {c} | {c}{cur['near']}/{c}{cur['far']} | {cur['lots']:.0f} | {fmt_number(cur['near_oi'])} | "
+            f"| {r['name']} | {c} | {pair_text(c, cur)} | {cur['lots']:.0f} | {fmt_number(cur['near_oi'])} | "
             f"{cur['coverage']:.1f}% | {r['rank']:.0f}% | {fmt_price(cur['spread'], c, True)} | "
             f"{extreme_text(r, 'hist_max')} | {extreme_text(r, 'hist_min')} | {peer_pos_text(r)} | {rng} | "
             f"{fmt_price(r.get('y50'), c, True)} | {len(r['peers'])} | {cov_range_text(r)} | {r['verdict']} | {'；'.join(r['notes']) or '—'} |")
@@ -1333,7 +1394,7 @@ def spread_to_csv(path: Path, results: list[dict]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["日期", "代码", "近月", "下月", "仓单", "仓单单位", "仓单(手)", "近月持仓(手)", "覆盖率%",
-                    "近月结算价", "下月结算价", "价差", "价差占下月%", "近月成交", "下月成交"])
+                    "近月结算价", "下月结算价", "价差（rb、hc、ru、nr、br 为下月−近月，其余为近月−下月）", "价差占下月%", "近月成交", "下月成交"])
         for r in results:
             for row in r["rows"]:
                 g = lambda k, fmt="{:g}": fmt.format(row[k]) if row.get(k) is not None else ""
@@ -1351,13 +1412,13 @@ def spread_to_html_section(results: list[dict], meta: dict) -> str:
     parts = [f"<section><h2>跨月价差参考 <small>{span[0]:%Y-%m-%d} ~ {span[1]:%Y-%m-%d} · {span[2]} 个交易日</small></h2>"
              if span else "<section><h2>跨月价差参考</h2>",
              f'<p class="note">{explain}</p><div class="wrap"><table><thead><tr>'
-             "<th>品种</th><th>代码</th><th>近月/下月</th><th>覆盖率</th><th>覆盖率排名</th><th>现在价差</th>"
+             "<th>品种</th><th>代码</th><th>价差算法</th><th>覆盖率</th><th>覆盖率排名</th><th>现在价差</th>"
              "<th>历史最高（日期）</th><th>历史最低（日期）</th><th>价差在同类中的位置</th><th>同类区间（中间80%）</th><th>同类中位数</th><th>样本</th><th>只看覆盖率的区间（中间80%）</th><th>判断</th><th>备注</th></tr></thead><tbody>"]
     for r in results:
         c = r["code"]
         cur = r.get("cur")
         if r["status"] != "ok":
-            pair = f"{c}{cur['near']}/{c}{cur['far']}" if cur else "—"
+            pair = pair_text(c, cur) if cur else "—"
             parts.append(f"<tr><td>{r['name']}</td><td>{c}</td><td>{pair}</td><td>—</td><td>—</td><td>none</td>"
                          f"<td>{extreme_text(r, 'hist_max')}</td><td>{extreme_text(r, 'hist_min')}</td>"
                          f"<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>{html.escape(r['status'])}</td></tr>")
@@ -1365,7 +1426,7 @@ def spread_to_html_section(results: list[dict], meta: dict) -> str:
         rng = f"{fmt_price(r['y10'], c, True)} ~ {fmt_price(r['y90'], c, True)}" if "y10" in r else "—"
         cls = ' class="up"' if r["verdict"].startswith("偏高") else ' class="down"' if r["verdict"].startswith("偏低") else ""
         parts.append(
-            f"<tr><td>{r['name']}</td><td>{c}</td><td>{c}{cur['near']}/{c}{cur['far']}</td>"
+            f"<tr><td>{r['name']}</td><td>{c}</td><td>{pair_text(c, cur)}</td>"
             f"<td>{cur['coverage']:.1f}%</td><td>{r['rank']:.0f}%</td><td>{fmt_price(cur['spread'], c, True)}</td>"
             f"<td>{extreme_text(r, 'hist_max')}</td><td>{extreme_text(r, 'hist_min')}</td>"
             f"<td{cls}>{peer_pos_text(r)}</td><td>{rng}</td><td>{fmt_price(r.get('y50'), c, True)}</td><td>{len(r['peers'])}</td>"
@@ -1699,7 +1760,7 @@ ol.news {{ font-size: 13px; line-height: 1.6; padding-left: 22px; }} .meta {{ co
 
 COVERAGE_HEADS = ["品种", "代码", "近月合约", "仓单(手)", "近月持仓(手)", "近月覆盖率", "同期排名", "同期中位数", "风险提示"]
 COVERAGE_NOTE = ("近月覆盖率 = 仓单（换算成手）÷ 近月合约持仓，越高越不容易被挤。月中低于 100% 很常见（很多持仓到月底前会平仓或换月），"
-                 "所以跟自己过去 3 年「每月同一时段」（月内日期前后 {day} 天，不含本月）比：同期排名 = 有多少同期日子的覆盖率不高于今天，"
+                 "所以跟自己过去 3 年「每月同一时段」（月内日期前后 {day} 天，不含本月；螺纹钢、热轧卷板、天然橡胶的近月是 1/5/10 或 1/5/9 月合约，改成离近月交割月天数前后 {day} 天、不含同一个近月合约）比：同期排名 = 有多少同期日子的覆盖率不高于今天，"
                  "0% = 同期最低；同期中位数 = 同期日子覆盖率的中间值。排名 ≤{hi}% 提示【高】，≤{mid}% 提示【中】。")
 
 
@@ -1724,7 +1785,7 @@ def coverage_note() -> str:
 
 
 def coverage_to_markdown(results: list[dict]) -> str:
-    lines = ["## 近月覆盖率（au、al、ao、rb、hc、pb、zn、sn、cu、nr、br）", "", coverage_note(), "",
+    lines = [f"## 近月覆盖率（{'、'.join(SPREAD_CODES)}）", "", coverage_note(), "",
              "| " + " | ".join(COVERAGE_HEADS) + " |", "|" + "---|" * len(COVERAGE_HEADS)]
     lines += ["| " + " | ".join(row) + " |" for row in coverage_rows(results)]
     return "\n".join(lines + [""])
