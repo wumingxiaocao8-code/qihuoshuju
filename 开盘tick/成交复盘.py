@@ -2,16 +2,16 @@
 
 用法（在本文件夹里）：
   python 成交复盘.py 成交记录_261022.csv "成交记录_261022(1).csv"
-      把导出的文件拷进「成交/」（按交易日改名 2026-10-22_账号A.csv、_账号B.csv，原样不转码），再复盘
-  python 成交复盘.py 2026-10-22      「成交/」里已经有这一天的文件，直接复盘
-结果：成交/2026-10-22_复盘.html（给人看的），配对明细在 成交/配对/。
+      把导出的文件拷进「期货数据/成交/原始记录/」（按交易日改名 2026-10-22_账号A.csv、_账号B.csv，原样不转码），再复盘
+  python 成交复盘.py 2026-10-22      「成交/原始记录/」里已经有这一天的文件，直接复盘
+结果：成交/复盘网页/2026-10-22_复盘.html（给人看的），配对明细在 成交/配对明细/。
 
 一、配对：用 trade-data-analysis 技能里的配对脚本（先开先平，腿1 先成交、腿2 固定；不去重）。
   腿2 按「合约.txt」里每个品种的腿2；合约.txt 里没有的品种（比如黄金），文件里只有两个合约时脚本自己认先成交的为腿1。
   导出文件没有成交编号，同一秒里谁先成交只能按文件顺序（导出是最新的在前，这里倒过来）。
   导出只有时分秒：21:00 以后的算前一个交易日晚上的夜盘，0–3 点算夜里，其余算当天白天。
 二、开盘：夜盘 21:00、日盘 9:00 开盘后 10 秒内开的仓（小草定的，没大行情一般就前十秒）。
-  列出实际开在多少、平在多少，和 tick 复盘（复盘/开盘复盘.csv）里同一次开盘的昨收价差、针、第一次真实成交放一起；
+  列出实际开在多少、平在多少，和 tick 复盘（复盘数据/开盘复盘.csv）里同一次开盘的昨收价差、针、第一次真实成交放一起；
   不在合约.txt 里的组合没取 tick，只列成交。
 三、盘中开仓：其余开仓。合理价差 = 这个组合最近 5 个交易日（不含当天）的分钟价差中位数，常见区间 = 中间八成（10%–90%）。
   分钟价差 = 两腿同一分钟的收盘价相减，只用两腿这一分钟都有成交的；分钟线从天勤取（免费版每个合约 10000 根，约五六周）。
@@ -34,10 +34,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TRADES = HERE / "成交"
-PAIRS = TRADES / "配对"
+TRADE_ROOT = HERE.parent / "成交"  # 期货数据/成交/
+TRADES = TRADE_ROOT / "原始记录"
+PAGES = TRADE_ROOT / "复盘网页"
+PAIRS = TRADE_ROOT / "配对明细"
 LIST_FILE = HERE / "合约.txt"
-REC_FILE = HERE / "复盘" / "开盘复盘.csv"
+REC_FILE = HERE / "复盘数据" / "开盘复盘.csv"
 SKILL = Path.home() / ".claude" / "skills" / "trade-data-analysis" / "scripts" / "analyze_trades.py"
 
 VENV_SITE = Path.home() / ".venvs" / "vault" / "Lib" / "site-packages"
@@ -65,19 +67,19 @@ def day_from_name(name: str) -> str | None:
 
 
 def import_files(paths: list[str]) -> str:
-    """拷进「成交/」，按交易日 + 账号 A、B…… 改名；已经有的不覆盖。返回交易日。"""
+    """拷进「成交/原始记录/」，按交易日 + 账号 A、B…… 改名；已经有的不覆盖。返回交易日。"""
     days = {day_from_name(Path(p).name) for p in paths}
     if len(days) != 1 or None in days:
         sys.exit(f"从文件名看不出是同一个交易日：{[Path(p).name for p in paths]}")
     day = days.pop()
-    TRADES.mkdir(exist_ok=True)
+    TRADES.mkdir(parents=True, exist_ok=True)
     for i, p in enumerate(paths):
         dst = TRADES / f"{day}_账号{chr(65 + i)}.csv"
         if dst.exists():
             print(f"{dst.name} 已有，不覆盖")
         else:
             shutil.copy2(p, dst)
-            print(f"{Path(p).name} → 成交/{dst.name}")
+            print(f"{Path(p).name} → 成交/原始记录/{dst.name}")
     return day
 
 
@@ -308,7 +310,7 @@ def summary_section(results: dict, day: str) -> str:
             notes.append(f"账号{acct}：" + "、".join(f"{x['组合']} {x['平仓方向']} {fmt(x['手数'], 0)} 手" for x in res["期初仓位平仓"])
                          + " 平的是今天以前开的仓，逐笔盈亏照算，手续费只有平仓那一半。")
         if res["异常"]:
-            notes.append(f"⚠ 账号{acct}：{len(res['异常'])} 条没配上，见 成交/配对/ 里的配对.md。")
+            notes.append(f"⚠ 账号{acct}：{len(res['异常'])} 条没配上，见 成交/配对明细/ 里的配对.md。")
     notes.append("全天 = 原文件「平仓盈亏(逐笔)」整列加总 − 手续费整列加总，今天有没平的仓时，手续费里多了它们开仓那一半，全天会比各组合加起来少一些。")
     return (table(["号", "组合", "平掉的手数", "逐笔盈亏", "手续费", "净盈亏（元）"], rows)
             + "".join(f"<p class='note'>{esc(n)}</p>" for n in notes))
@@ -318,10 +320,10 @@ def write_page(day: str, results: dict, all_opens: list[dict]) -> Path:
     op = [o for o in all_opens if o["开盘"]]
     intra = [o for o in all_opens if not o["开盘"]]
     body = [f"<h1>成交复盘 {day}</h1><p class='meta'>交易日 {day}（{night_date(day)} 晚上夜盘到 {day} 15:00），"
-            f"账号 {'、'.join(results)}。生成于 {datetime.now():%Y-%m-%d %H:%M}。配对明细在 成交/配对/。</p>",
+            f"账号 {'、'.join(results)}。生成于 {datetime.now():%Y-%m-%d %H:%M}。配对明细在 成交/配对明细/。</p>",
             "<p class='note'>价差 = 腿1 − 腿2。空开 = 卖腿1、买腿2，等价差往下；多开 = 买腿1、卖腿2，等价差往上。</p>",
             f"<h2>开盘（开盘后 {OPEN_SECONDS} 秒内开的仓）</h2>", opening_section(op),
-            "<p class='note'>昨收价差、针、第一次真实成交、5 秒、第一分钟来自 tick 复盘（复盘/开盘复盘.csv）。"
+            "<p class='note'>昨收价差、针、第一次真实成交、5 秒、第一分钟来自 tick 复盘（复盘数据/开盘复盘.csv）。"
             "「比第一次真实成交好」：空开开得比它高、多开开得比它低为正，单位是价差的点。</p>",
             "<h2>盘中开仓：方向合不合理</h2>", intraday_section(intra),
             f"<p class='note'>合理价差 = 最近 {RECENT_DAYS} 个交易日（不含今天）两腿都有成交的分钟价差的中位数；常见区间 = 中间八成。"
@@ -333,7 +335,8 @@ def write_page(day: str, results: dict, all_opens: list[dict]) -> Path:
             "<p class='note'>盈亏一律用原文件的「平仓盈亏(逐笔)」（按实际开仓价算的，小草说这才是真正的盈亏；盯市的「平仓盈亏」有时不准），"
             "净盈亏 = 逐笔 − 手续费。按先开先平配对（trade-data-analysis 的配对脚本）。手续费用文件里记的；"
             "导出没有成交编号，同一秒的先后按文件顺序。</p>"]
-    f = TRADES / f"{day}_复盘.html"
+    PAGES.mkdir(parents=True, exist_ok=True)
+    f = PAGES / f"{day}_复盘.html"
     f.write_text(page(f"成交复盘 {day}", "".join(body)), encoding="utf-8")
     return f
 
@@ -341,6 +344,7 @@ def write_page(day: str, results: dict, all_opens: list[dict]) -> Path:
 def main():
     ap = argparse.ArgumentParser(description="成交复盘")
     ap.add_argument("args", nargs="+", help="交易日（2026-10-22），或导出的成交文件")
+    ap.add_argument("--leg2", default="", help="临时指定腿2，覆盖合约.txt：au=au2612,br=br2612")
     a = ap.parse_args()
     if len(a.args) == 1 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.args[0]):
         day = a.args[0]
@@ -348,8 +352,9 @@ def main():
         day = import_files(a.args)
     accts = sorted(p.stem.split("_账号")[1] for p in TRADES.glob(f"{day}_账号*.csv"))
     if not accts:
-        sys.exit(f"成交/ 里没有 {day} 的文件")
+        sys.exit(f"成交/原始记录/ 里没有 {day} 的文件")
     skill, leg2 = load_skill(), leg2_map()
+    leg2.update(dict(x.split("=", 1) for x in a.leg2.replace("，", ",").split(",") if "=" in x))
     results = {acct: pair(day, acct, skill, leg2) for acct in accts}
     all_opens = [o for acct, res in results.items() for o in opens(res, day, acct)]
     need = {c for o in all_opens if not o["开盘"] for c in o["组合"].split("-")}

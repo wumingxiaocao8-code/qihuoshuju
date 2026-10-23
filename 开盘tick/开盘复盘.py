@@ -3,7 +3,7 @@
 平时不用手动跑：开盘tick.py 取完 tick（21:03、9:03）会调用这里，把「数据/」里所有开盘重新算一遍。
 手动跑（在本文件夹里）：python 开盘复盘.py
 
-每次开盘、每个组合一行（复盘/开盘复盘.csv）：
+每次开盘、每个组合一行（复盘数据/开盘复盘.csv）：
   昨收价差    两腿上一次收盘价之差（开盘文件夹里的「收盘价.csv」，没有就用「预估.csv」里记的）
   针          竞价那张快照（20:59 / 8:59，成交手数 > 0）两腿的价差；有一腿竞价没成交就空着
   第一次真实成交  开盘后两腿第一次在同一个半秒里都有成交，那半秒的均价价差
@@ -19,10 +19,10 @@
   预估误差    腿2 竞价价 − 开盘预估.py 估的价（没有预估就空着）
   标签        星期、周一早盘、节后第一次开盘、换月期（每月 8–15 号）、腿1 离到期几天；
               仓储提示、长期事件（预估时记下的，照抄 output/ 里期货速览的结果）
-同样内容另存一份 复盘/开盘复盘.xlsx（列宽调好，给人用 Excel 看；程序读 .csv）。
-系数历史（复盘/系数历史.csv）：每次开盘、每个品种一行（主力 = 腿2），开盘预估.py 用它算系数。
+同样内容另存一份 复盘数据/开盘复盘.xlsx（列宽调好，给人用 Excel 看；程序读 .csv）。
+系数历史（复盘数据/系数历史.csv）：每次开盘、每个品种一行（主力 = 腿2），开盘预估.py 用它算系数。
   开头的「回测」行是 2024-05 起两年多的夜盘开盘（日线 + 雅虎小时线，外盘算到 21:00），后面是每次实盘记的。
-网页：开盘复盘.html（最近一次开盘、记分卡、涨跌幅统计、预估准不准、明细）。
+网页：复盘网页/开盘日期_时间.html（最近一次开盘、记分卡、涨跌幅统计、预估准不准、明细），每次开盘一份。
 """
 import html
 import math
@@ -43,11 +43,11 @@ import 外盘涨跌 as wp  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "数据"
-REVIEW = HERE / "复盘"
+REVIEW = HERE / "复盘数据"
 COEF_FILE = REVIEW / "系数历史.csv"
 BASE_FILE = REVIEW / "针_日线基线.csv"
 REC_FILE = REVIEW / "开盘复盘.csv"
-PAGE = HERE / "开盘复盘.html"
+PAGE_DIR = HERE / "复盘网页"  # 每次开盘后的复盘网页：复盘网页/2026-10-23_0900.html（按最近一次开盘命名）
 FORECAST_DIR = HERE / "预估"  # 每次开盘的预估网页：预估/2026-10-22_2100.html
 LEAD = timedelta(minutes=7)  # 预估在开盘前 7 分钟（20:53 / 8:53）
 BINS = [(1, "没波动"), (3, "小"), (6, "大"), (math.inf, "超大")]  # 外盘涨跌幅绝对值的上限（%）
@@ -234,7 +234,7 @@ def fit(coef: pd.DataFrame, product: str, session: str, before, move=None) -> di
 
 
 def needle_base(product: str, offset, dirn: str, bkt: str):
-    """两年日线粗估（复盘/针_日线基线.csv）：外盘这个方向、这一档，针是同向还是反向、变化多大（针变化占主力昨收的 %，正 = 价差往上）。
+    """两年日线粗估（复盘数据/针_日线基线.csv）：外盘这个方向、这一档，针是同向还是反向、变化多大（针变化占主力昨收的 %，正 = 价差往上）。
     offset 写「全部」= 几个组合合在一起。"""
     base = read_csv(BASE_FILE)
     if base is None or not bkt or not dirn or "外盘方向" not in base:
@@ -707,7 +707,7 @@ def move_cell(r) -> str:
 def forecast_link(opening: str) -> str:
     """这次开盘的预估网页（预估/2026-10-22_2100.html），没有就空着。"""
     f = FORECAST_DIR / f"{opening.replace(' ', '_').replace(':', '')}.html"
-    return f"{FORECAST_DIR.name}/{f.name}" if f.exists() else ""
+    return f"../{FORECAST_DIR.name}/{f.name}" if f.exists() else ""
 
 
 def tags(r) -> str:
@@ -737,13 +737,21 @@ def latest_table(g: pd.DataFrame) -> str:
                   "备注"], rows)
 
 
-def write_page(rec: pd.DataFrame) -> None:
-    rec = opened(rec)  # 网页只看开过盘的；还没开盘的预估在 预估/ 的网页里
+def latest_page() -> Path | None:
+    """最新的复盘网页（开盘预估页链过来用）。"""
+    pages = sorted(PAGE_DIR.glob("????-??-??_????.html"))
+    return pages[-1] if pages else None
+
+
+def write_page(rec: pd.DataFrame) -> Path | None:
+    rec = opened(rec)
+    if not len(rec):
+        return None  # 网页只看开过盘的；还没开盘的预估在 预估/ 的网页里
     pages = sorted(FORECAST_DIR.glob("????-??-??_????.html"))
-    link = f"<a href='{FORECAST_DIR.name}/{pages[-1].name}'>最新的开盘预估</a>（全部在 {FORECAST_DIR.name}/ 文件夹）" if pages else "还没有开盘预估"
+    link = f"<a href='../{FORECAST_DIR.name}/{pages[-1].name}'>最新的开盘预估</a>（全部在 {FORECAST_DIR.name}/ 文件夹）" if pages else "还没有开盘预估"
     body = [f"<h1>开盘复盘</h1><p class='meta'>更新于 {datetime.now():%Y-%m-%d %H:%M}，"
             f"共 {rec['开盘'].nunique()} 次开盘、{len(rec)} 行（数据/ 里有 tick 的开盘）。"
-            f"{link} · 明细在 复盘/开盘复盘.csv</p>"
+            f"{link} · 明细在 复盘数据/开盘复盘.csv</p>"
             "<p class='note'>同向 / 反向（小草定的）：外盘涨、价差（腿1 − 腿2，次主力 − 主力）比昨收价差往上 = 同向，"
             "外盘跌、价差往下也是同向；反过来是反向。针和第一次真实成交各判断一次，外盘涨、跌分开统计。</p>"]
     if len(rec):
@@ -804,7 +812,10 @@ def write_page(rec: pd.DataFrame) -> None:
               colored(r["主力跳空"], 2), r["针真假"], fmt(r["腿1竞价占持仓‰"], 2), tags(r),
               Raw(f"<a href='{forecast_link(r['开盘'])}'>看</a>") if forecast_link(r["开盘"]) else ""]
              for _, r in recent.iterrows()]))
-    PAGE.write_text(page("开盘复盘", "".join(body)), encoding="utf-8")
+    PAGE_DIR.mkdir(exist_ok=True)
+    f = PAGE_DIR / f"{rec['开盘'].max().replace(' ', '_').replace(':', '')}.html"
+    f.write_text(page("开盘复盘", "".join(body)), encoding="utf-8")
+    return f
 
 
 def write_xlsx(df: pd.DataFrame, f: Path) -> None:
@@ -841,7 +852,7 @@ def write_xlsx(df: pd.DataFrame, f: Path) -> None:
 
 
 def run(out: Path = DATA) -> None:
-    """重算所有开盘：写 复盘/开盘复盘.csv、更新 复盘/系数历史.csv 的实盘部分、写 开盘复盘.html。出错只打印，不抛出。"""
+    """重算所有开盘：写 复盘数据/开盘复盘.csv、更新 复盘数据/系数历史.csv 的实盘部分、写 复盘网页/开盘日期_时间.html。出错只打印，不抛出。"""
     try:
         rec = build_records(out)
         REVIEW.mkdir(exist_ok=True)
@@ -849,8 +860,8 @@ def run(out: Path = DATA) -> None:
         write_xlsx(rec[OUT_COLS], REC_FILE.with_suffix(".xlsx"))
         live = coef_live(rec)
         update_coef(live)
-        write_page(rec)
-        print(f"开盘复盘：{rec['开盘'].nunique()} 次开盘、{len(rec)} 行；系数历史新增实盘 {len(live)} 行；网页 {PAGE.name}")
+        f = write_page(rec)
+        print(f"开盘复盘：{rec['开盘'].nunique()} 次开盘、{len(rec)} 行；系数历史新增实盘 {len(live)} 行；网页 {f.name if f else '没写（还没有开过盘的数据）'}")
     except Exception as e:
         import traceback
         print(f"开盘复盘出错：{type(e).__name__} {e}\n{traceback.format_exc()}")

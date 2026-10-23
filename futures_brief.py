@@ -15,7 +15,7 @@
     python futures_brief.py page                  # 只重新拼网页（AI 写完解读后用）
     python futures_brief.py review                # 复盘：AI 解读说的价差方向，后来真的这样走了吗
 
-结果写到本文件旁边的 output/ 目录；复盘存档和报告在 复盘/ 目录。
+结果写到本文件旁边的 output/ 目录；复盘存档和报告在 影响因素复盘/ 目录。
 """
 
 from __future__ import annotations
@@ -2955,14 +2955,14 @@ def run_page(args) -> list[Path]:
 
 # ---------------------------------------------------------------- 复盘（AI 解读说的方向，后来价差真的这样走了吗）
 
-REVIEW_DIR = ROOT / "复盘"
+REVIEW_DIR = ROOT / "影响因素复盘"
 REVIEW_ARCHIVE = REVIEW_DIR / "存档"                # 每次 AI 解读的存档：存档/更新时间/AI解读.json、长期事件.json
 REVIEW_STATS = REVIEW_DIR / "复盘结果.json"          # 汇总数字，网页上的一句话提示用
 REVIEW_HORIZONS = (5, 20)                          # 看几个交易日之后
 REVIEW_FLAT = 0.05                                 # 价差变化不到下月价格的 0.05%，算「基本没变」
 REVIEW_MIN_N = 10                                  # 少于这么多次不算命中率
 REVIEW_EXPLAIN = [
-    "AI 每次「更新影响因素」后，解读会自动存档到 `复盘/存档/`。每条解读带一个「指向」：AI 按常见机制判断，"
+    "AI 每次「更新影响因素」后，解读会自动存档到 `影响因素复盘/存档/`。每条解读带一个「指向」：AI 按常见机制判断，"
     "这个因素通常把「近月 − 下月」价差往哪边推（价差变大 / 价差变小 / 不明确）。它不是预测，这里只是拿来对答案。",
     f"**对答案**：从 AI 当时用的价差日期算起，往后数 {' 个、'.join(map(str, REVIEW_HORIZONS))} 个交易日，"
     "用同样两个合约（当时的近月和下月）看价差实际变大还是变小。"
@@ -2981,7 +2981,7 @@ def ai_stamp_folder(ai: dict) -> str | None:
 
 
 def archive_ai() -> Path | None:
-    """把当前的 AI解读.json、长期事件.json 复制到 复盘/存档/更新时间/（备份 + 以后复盘用）。"""
+    """把当前的 AI解读.json、长期事件.json 复制到 影响因素复盘/存档/更新时间/（备份 + 以后复盘用）。"""
     ai, _ = load_ai_file(FACTOR_AI)
     name = ai_stamp_folder(ai) if ai else None
     if not name:
@@ -3146,7 +3146,7 @@ def review_tables(records: list[dict], names: dict) -> list[tuple[str, list[str]
 
 
 def build_review() -> list[Path]:
-    """生成 复盘/复盘报告.md 和 .html。"""
+    """生成 影响因素复盘/复盘报告.md 和 .html。"""
     archive_ai()
     records, snaps = review_records()
     review_outcomes(records)
@@ -3186,11 +3186,11 @@ def build_review() -> list[Path]:
 
 def review_note_html() -> str:
     """影响因素标签页上关于复盘的一句话。"""
-    link = '<a href="../复盘/复盘报告.html" target="_blank">打开复盘报告</a>（在「复盘」文件夹里）'
+    link = '<a href="../影响因素复盘/复盘报告.html" target="_blank">打开复盘报告</a>（在「影响因素复盘」文件夹里）'
     try:
         s = json.loads(REVIEW_STATS.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
-        return ('<p class="note"><b>复盘</b>：AI 每次更新解读都会自动存档到「复盘/存档/」，'
+        return ('<p class="note"><b>复盘</b>：AI 每次更新解读都会自动存档到「影响因素复盘/存档/」，'
                 f'{"、".join(map(str, REVIEW_HORIZONS))} 个交易日后可以对答案，看哪些因素真的和价差走向一致。</p>')
     done = "、".join(f"{h} 日后 {s['已对答案'].get(str(h), 0)} 条" for h in REVIEW_HORIZONS)
     return (f'<p class="note"><b>复盘</b>：已存档 {s["存档次数"]} 次 AI 解读；已经能对答案的：{done}。{link}'
