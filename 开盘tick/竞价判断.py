@@ -287,13 +287,15 @@ def before_from_ticks(api, s: str, o: datetime) -> dict | None:
             "最新价": num(r["last_price"]), "成交量": num(r["volume"]), "持仓": num(r["open_interest"])}
 
 
-def snap_from_quote(q, before: dict, o: datetime) -> dict:
+def snap_from_quote(q, before: dict, o: datetime, carry: bool = False) -> dict:
     """实盘：竞价那张快照。夜盘开盘是新的交易日，成交量从 0 算起，成交量就是竞价手数；
-    日盘开盘、前面有夜盘的，成交量接着夜盘累计，要减掉竞价前的。"""
+    日盘开盘、前面有夜盘的（carry），成交量接着夜盘累计，要减掉竞价前的。竞价前那张可能是夜盘收盘那张，
+    也可能是开盘前几分钟交易所又推的一张（8:5x，10-23 晚夜盘就有合约是这样），两种都要减。"""
     vol = num(q.volume) or 0
     bt = before.get("时间")
-    if o.hour < 12 and bt is not None and (bt.hour >= 20 or bt.hour < 3) and before.get("成交量") is not None:
-        vol = vol - before["成交量"] if vol >= before["成交量"] else vol
+    if (carry and bt is not None and (bt.hour >= 20 or bt.hour < 3 or bt.date() == o.date())
+            and before.get("成交量") is not None and vol >= before["成交量"]):
+        vol -= before["成交量"]
     oi = num(q.open_interest)
     chg = oi - before["持仓"] if oi is not None and before.get("持仓") is not None else None
     return {"时间": when(q.datetime), "竞价价": num(q.last_price) if vol > 0 else None, "竞价手数": vol, "持仓": oi,
@@ -560,9 +562,13 @@ def live(o: datetime, pairs: list, jf: Path, state: dict, page: Path, skew: floa
     log = {"连上": clock()}
     try:
         cal = api.get_trading_calendar(start_dt=(o - timedelta(days=20)).date(), end_dt=(o + timedelta(days=20)).date())
-        if not pre.has_opening(o, {d.date() for d in cal[cal["trading"]]["date"]}):
+        days = {d.date() for d in cal[cal["trading"]]["date"]}
+        if not pre.has_opening(o, days):
             print("交易日历显示这次没有开盘（周末、节假日或节前一晚）")
             return None
+        # 日盘开盘：上一个交易日晚上有没有夜盘（有的话成交量接着夜盘累计；节后第一天没有夜盘，从 0 算起）
+        prev = max((d for d in days if d < o.date()), default=None)
+        carry = o.hour < 12 and prev is not None and pre.has_opening(datetime.combine(prev, datetime.min.time()).replace(hour=21), days)
         symbols = list(dict.fromkeys(s for pr in pairs for s in pr))
         quotes, missing = {}, {}
         try:
@@ -630,7 +636,7 @@ def live(o: datetime, pairs: list, jf: Path, state: dict, page: Path, skew: floa
                 missing[s] = "没收到竞价快照"
             elif s not in before:
                 missing[s] = "没取到竞价前的状态"
-        snaps = {s: snap_from_quote(quotes[s], before[s], o) for s in got if s in before}
+        snaps = {s: snap_from_quote(quotes[s], before[s], o, carry) for s in got if s in before}
         ticks = {s: num(q.price_tick) for s, q in quotes.items()}
         rows = evaluate(o, pairs, snaps, closes, ticks, past, "实盘", missing)
         log["算好"] = clock()
