@@ -17,6 +17,9 @@
               在范围内 = 针落没落在预测区间里；预估误差 = 腿2 竞价价 − 腿2预估（主力价格）
               20:53 / 8:53 开盘预估.py 估完就写进来（那时还没 tick，这几列和昨收、外盘先有，开盘后整行补全）
   预估误差    腿2 竞价价 − 开盘预估.py 估的价（没有预估就空着）
+  59 分判断   竞价判断.py 在 20:59 / 8:59 判的：真（✅ 大概率整根开到针附近）/ 半真（▲ 开到一部分）/ 假（❌）/ 没针 / 不判断，
+              判断得分（竞价量分 + 盘口分）、托住几成、预计首笔区间、首笔在区间里；
+              判断来源 = 实盘（当时写的 竞价判断.csv）或 回放（那次没跑竞价判断，用存下来的 tick 补算）
   标签        星期、周一早盘、节后第一次开盘、换月期（每月 8–15 号）、腿1 离到期几天；
               仓储提示、长期事件（预估时记下的，照抄 output/ 里期货速览的结果）
 同样内容另存一份 复盘数据/开盘复盘.xlsx（列宽调好，给人用 Excel 看；程序读 .csv）。
@@ -59,18 +62,20 @@ WEEK = "一二三四五六日"
 REC_COLS = ["开盘", "场次", "星期", "组合", "品种", "腿1", "腿2", "腿1相对主力", "腿1昨收", "腿2昨收", "昨收价差",
             "腿1竞价", "腿2竞价", "腿1竞价手数", "腿2竞价手数", "针", "针变化", "腿1跳空", "主力跳空", "针方向",
             "针真假", "针偏几档", "首笔偏几档", "腿1竞价占持仓‰", "腿1竞价持仓变化",
+            "59分判断", "判断得分", "托住几成", "预计首笔区间", "首笔在区间里", "判断来源",
             "首笔秒", "首笔价差", "首笔变化", "首笔方向", "价差1秒", "价差5秒", "价差30秒", "价差60秒",
             "首分钟买价差最低", "首分钟卖价差最高", "外盘涨跌%", "外盘方向", "分档", "外盘时段", "外盘来源",
             "腿1预估", "腿2预估", "预测区间", "预测方向", "预估误差", "在范围内", "仓储提示", "长期事件",
             "周一早盘", "节后", "换月期", "腿1离到期天数", "备注"]
 PCT_COLS = ["主力跳空%", "腿1跳空%"]  # 只在程序里用（记分卡、涨跌幅统计），不写进表格
-HIDDEN_COLS = PCT_COLS + ["预估下沿", "预估上沿", "主力在范围内"]  # 主力价格的八成范围，只给网页「预估准不准」用
+HIDDEN_COLS = PCT_COLS + ["预估下沿", "预估上沿", "主力在范围内", "首笔下沿", "首笔上沿"]  # 只在程序里用
 # 写进表格的列和顺序（小草定的）：针变化只在程序里用（针方向、记分卡），不写进表格
 OUT_COLS = ["开盘", "场次", "星期", "组合", "品种", "腿1", "腿2",
             "昨收价差", "针", "外盘涨跌%",
             "首笔价差", "首笔变化", "首笔方向", "价差1秒", "价差5秒", "价差30秒", "价差60秒", "首分钟买价差最低", "首分钟卖价差最高",
             "腿1竞价", "腿2竞价", "腿1竞价手数", "腿2竞价手数", "腿1跳空", "主力跳空",
-            "针真假", "针偏几档", "首笔偏几档", "腿1竞价占持仓‰", "腿1竞价持仓变化"]
+            "针真假", "针偏几档", "首笔偏几档", "腿1竞价占持仓‰", "腿1竞价持仓变化",
+            "59分判断", "判断得分", "托住几成", "预计首笔区间", "首笔在区间里", "判断来源"]
 OUT_COLS += [c for c in REC_COLS if c not in OUT_COLS and c != "针变化"]
 # 针真不真（小草定的，2026-10-22）：首笔真实成交相对昨收价差偏出这么多档（最小变动价位）才算有动静
 NEEDLE_GATE = {"sc": 15, "fu": 20, "bu": 20, "ag": 10, "cu": 6, "sp": 5, "nr": 5, "br": 5, "ru": 5, "ss": 5,
@@ -313,7 +318,8 @@ def overseas_saved(folder: Path, product: str, open_ts) -> dict:
 
 
 def analyze(folder: Path, open_ts: datetime, s1: str, s2: str, closes: dict, fc) -> dict:
-    p = product_of(s1)
+    p1, p2 = product_of(s1), product_of(s2)
+    p = p1 if p1 == p2 else f"{p1}-{p2}"  # 跨品种组合（nr2612-ru2701）单独一类：没有门槛、外盘、系数，不跟同品种的混在一起统计
     rec = {"开盘": f"{open_ts:%Y-%m-%d %H:%M}", "场次": session_of(open_ts), "星期": WEEK[open_ts.weekday()],
            "组合": f"{s1.split('.')[-1]}-{s2.split('.')[-1]}", "品种": p, "腿1": s1.split(".")[-1], "腿2": s2.split(".")[-1],
            "腿1相对主力": offset_of(s1, s2)}
@@ -460,6 +466,8 @@ def opened(rec: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_records(out: Path = DATA) -> pd.DataFrame:
+    import 竞价判断 as jd  # 59 分判断（竞价判断.py 也 import 本文件，放在这里免得互相 import 卡住）
+    past = read_csv(REC_FILE)  # 上一次算的结果：回放算首笔区间时用（只看那次以前的开盘）
     rows = []
     for folder in sorted(out.glob("????-??-??_????")):
         pairs = sorted(folder.glob("价差_*.csv"))
@@ -470,10 +478,17 @@ def build_records(out: Path = DATA) -> pd.DataFrame:
                 rows += forecast_only(open_ts, fc)
             continue
         closes = load_closes(folder, fc)
+        live = jd.read_live(folder)
         for f in pairs:
             s1, s2 = f.stem[len("价差_"):].split("-")
             try:
-                rows.append(analyze(folder, open_ts, s1, s2, closes, fc))
+                rec = analyze(folder, open_ts, s1, s2, closes, fc)
+                try:
+                    j = live.get(rec["组合"]) or jd.replay_pair(folder, open_ts, s1, s2, closes, past)
+                    rec |= jd.review_cols(j, rec.get("首笔价差"))
+                except Exception as e:
+                    rec["备注"] = "；".join(x for x in (rec.get("备注"), f"59 分判断算错了：{type(e).__name__} {e}") if x)
+                rows.append(rec)
             except Exception as e:
                 rows.append({"开盘": f"{open_ts:%Y-%m-%d %H:%M}", "组合": f"{s1}-{s2}", "备注": f"算错了：{type(e).__name__} {e}"})
     return pd.DataFrame(rows, columns=REC_COLS + HIDDEN_COLS)
@@ -635,6 +650,33 @@ def rule_ratio(rec: pd.DataFrame) -> str:
                   "样本"], rows)
 
 
+def rule_auction(rec: pd.DataFrame) -> str:
+    """规则五：59 分判断准不准。判成 ✅ ▲ ❌ 的，实际开成 真 / 半真 / 假 / 反向 各几根；首笔落没落在预计区间里。实盘、回放分开。"""
+    import 竞价判断 as jd
+    s = rec[rec["59分判断"].isin(["真", "半真", "假"])]
+    rows = []
+    for src in ("实盘", "回放"):
+        for k in ("真", "半真", "假"):
+            g = s[(s["判断来源"] == src) & (s["59分判断"] == k)]
+            if not len(g):
+                continue
+            c = {x: int((g["针真假"] == x).sum()) for x in ("真", "半真", "假", "反向")}
+            n = sum(c.values())
+            right = c[k] + (c["反向"] if k == "假" else 0)  # ❌ 说的是「开不到」，实际反向也算对
+            fill = c["真"] + c["半真"] if k != "假" else c["假"] + c["反向"]  # 能不能开到说对了没有
+            box = g["首笔在区间里"].isin(["是", "否"])
+            rows.append([src, f"{jd.SYMBOL[k]} {k}", n, c["真"], c["半真"], c["假"], c["反向"],
+                         f"{right / n * 100:.0f}%" if n else "", f"{fill / n * 100:.0f}%" if n else "",
+                         f"{int((g['首笔在区间里'] == '是').sum())} / {int(box.sum())}", small(g["开盘"].nunique())])
+    if not rows:
+        return "<p>还没有判成 ✅ ▲ ❌ 的针。</p>"
+    box = rec["首笔在区间里"].isin(["是", "否"])
+    allin = (f"<p class='note'>首笔区间（所有有区间的组合，含没针的）：{int((rec['首笔在区间里'] == '是').sum())} / {int(box.sum())} "
+             f"落在里面。</p>") if box.any() else ""
+    return table(["来源", "判成", "根数", "实际真", "半真", "假", "反向", "说对了", "能不能开到说对了", "首笔在区间里", "样本"],
+                 rows) + allin
+
+
 def accuracy(rec: pd.DataFrame) -> str:
     s = rec.dropna(subset=["预估误差"])
     rows = []
@@ -730,11 +772,21 @@ def latest_table(g: pd.DataFrame) -> str:
         rows.append([r["组合"], move_cell(r), fmt(r["昨收价差"], 2), fmt(r["针"], 2), colored(r["针变化"], 2), r["针方向"],
                      fmt(r["首笔价差"], 2), colored(r["首笔变化"], 2), r["首笔方向"], fmt(r["首笔秒"], 1),
                      fmt(r["价差5秒"], 2), fmt(r["价差60秒"], 2), fmt(r["首分钟买价差最低"], 2), fmt(r["首分钟卖价差最高"], 2),
-                     colored(r["腿1跳空"], 2), colored(r["主力跳空"], 2), r["针真假"], fmt(r["腿1竞价占持仓‰"], 2),
-                     r["备注"]])
+                     colored(r["腿1跳空"], 2), colored(r["主力跳空"], 2), r["针真假"], judged(r),
+                     r["预计首笔区间"] if isinstance(r["预计首笔区间"], str) else "", r["首笔在区间里"],
+                     fmt(r["腿1竞价占持仓‰"], 2), r["备注"]])
     return table(["组合", "外盘", "昨收价差", "针", "针变化", "针方向", "第一次真实成交", "变化", "方向", "开盘后几秒",
-                  "5 秒", "60 秒", "第一分钟买价差最低", "卖价差最高", "腿1跳空", "主力跳空", "针真假", "腿1竞价占持仓‰",
-                  "备注"], rows)
+                  "5 秒", "60 秒", "第一分钟买价差最低", "卖价差最高", "腿1跳空", "主力跳空", "针真假", "59 分判断",
+                  "预计首笔区间", "在区间里", "腿1竞价占持仓‰", "备注"], rows)
+
+
+def judged(r) -> str:
+    """59 分判断，带符号：「✅ 真」；回放补算的后面标「（回放）」。"""
+    k = r["59分判断"] if isinstance(r["59分判断"], str) else ""
+    if not k:
+        return ""
+    sym = {"真": "✅", "半真": "▲", "假": "❌", "没针": "○", "不判断": "？"}.get(k, "")
+    return f"{sym} {k}" + ("（回放）" if r["判断来源"] == "回放" else "")
 
 
 def latest_page() -> Path | None:
@@ -797,6 +849,12 @@ def write_page(rec: pd.DataFrame) -> Path | None:
                 "分档的线（0.7‰、1.5‰）是 10-22 从 3 次开盘看出来的临时线。"
                 "竞价后持仓减少 = 竞价里平仓比开仓多，10-22 夜盘 fu2702 竞价 3054 手却是假针，持仓少了 2994 手。</p>"
                 + rule_ratio(rec) + "</div>")
+    body.append("<div class='card'><h3>规则五：59 分判断准不准（✅ ▲ ❌）</h3>"
+                "<p class='note'>竞价判断.py 在 20:59 / 8:59 竞价一出结果就判断，贴在博易云的格子上：✅ 大概率整根开到针附近（真）、"
+                "▲ 大概率开到一部分（半真）、❌ 大概率假。这里对答案（针真假，小草定的）。说对了 = ✅ 实际真、▲ 实际半真、❌ 实际假或反向；"
+                "能不能开到说对了 = ✅ ▲ 实际真或半真、❌ 实际假或反向。实盘 = 当时真贴出来的；回放 = 那次没跑竞价判断、用存下来的 tick 补算的"
+                "（规则是 10-23 看着 10-21 到 10-22 的针定的，这几次的回放是样本内，会偏乐观）。</p>"
+                + rule_auction(rec) + "</div>")
     body.append("<h2>涨跌幅统计</h2><p class='note'>每次开盘、每个品种算一次。外盘涨跌 = 国内收盘 → 开盘前 7 分钟；"
                 "主力跳空 = 主力（腿2）竞价价对昨收；国内跟了几成 = 主力跳空 ÷ 外盘涨跌的中位数（外盘不到 0.3% 的不算）。"
                 "右边的两年回测是 2024-05 起的夜盘开盘（日线开盘价，外盘算到 21:00），只当对照。</p>" + move_stats(rec))
@@ -806,10 +864,10 @@ def write_page(rec: pd.DataFrame) -> Path | None:
         recent = rec[rec["开盘"].isin(sorted(rec["开盘"].unique())[-20:])].sort_values(["开盘", "组合"], ascending=[False, True])
         body.append("<h2>最近 20 次开盘明细</h2>" + table(
             ["开盘", "场次", "组合", "外盘", "昨收价差", "针变化", "针方向", "第一次成交变化", "方向", "腿1跳空", "主力跳空",
-             "针真假", "腿1竞价占持仓‰", "标签", "预估页"],
+             "针真假", "59 分判断", "腿1竞价占持仓‰", "标签", "预估页"],
             [[r["开盘"], r["场次"], r["组合"], move_cell(r), fmt(r["昨收价差"], 2),
               colored(r["针变化"], 2), r["针方向"], colored(r["首笔变化"], 2), r["首笔方向"], colored(r["腿1跳空"], 2),
-              colored(r["主力跳空"], 2), r["针真假"], fmt(r["腿1竞价占持仓‰"], 2), tags(r),
+              colored(r["主力跳空"], 2), r["针真假"], judged(r), fmt(r["腿1竞价占持仓‰"], 2), tags(r),
               Raw(f"<a href='{forecast_link(r['开盘'])}'>看</a>") if forecast_link(r["开盘"]) else ""]
              for _, r in recent.iterrows()]))
     PAGE_DIR.mkdir(exist_ok=True)

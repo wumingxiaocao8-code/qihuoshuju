@@ -14,7 +14,7 @@
     开盘复盘记下的 tick（2026-10-21 起），和两年日线粗估（复盘数据/针_日线基线.csv；日线的开盘价不一定是竞价价，只当参考）。
   背景（照抄，不参与计算）：期货速览最新的仓储风险提示（output/仓储/）、长期事件（output/因素/长期事件.json）、
     国内收盘以后的新闻标题（东方财富资讯搜索，按关键词抓、按标题筛，没经过 AI）。
-不锈钢这种没有对应外盘的品种不估。
+不锈钢这种没有对应外盘的品种、跨品种组合（nr2612-ru2701）不估。
 结果：预估/开盘日期_时间.html（网页，通知点开的就是它；没看到通知就去这个文件夹找）、
       数据/开盘日期_时间/预估.csv（复盘对答案用）。
 
@@ -288,8 +288,9 @@ def load_events() -> tuple[list, str]:
 def forecast(o: datetime, now: datetime, live: bool) -> dict:
     session = rv.session_of(o)
     pairs = [tuple(x.split(",")) for x in tick.read_list() if "," in x]
-    use = [(s1, s2) for s1, s2 in pairs if rv.product_of(s1) in wp.VARIETIES]
-    skipped = [f"{s1.split('.')[-1]}-{s2.split('.')[-1]}" for s1, s2 in pairs if rv.product_of(s1) not in wp.VARIETIES]
+    # 跨品种组合（nr2612-ru2701）不估：系数、门槛、过去的针都是按同一个品种算的
+    use = [(s1, s2) for s1, s2 in pairs if rv.product_of(s1) in wp.VARIETIES and rv.product_of(s1) == rv.product_of(s2)]
+    skipped = [f"{s1.split('.')[-1]}-{s2.split('.')[-1]}" for s1, s2 in pairs if (s1, s2) not in use]
     products = list(dict.fromkeys(rv.product_of(s1) for s1, _ in use))
     specs = list(dict.fromkeys(wp.VARIETIES[p][3] for p in products))
     symbols = list(dict.fromkeys(s for pr in use for s in pr))
@@ -528,7 +529,7 @@ def build_page(res: dict, page_file: Path) -> str:
         card.append(background(it, res) + "</div>")
         body.append("".join(card))
     if res["不估"]:
-        body.append(f"<p class='note'>不估：{rv.esc('、'.join(res['不估']))}（没有对应的外盘）。</p>")
+        body.append(f"<p class='note'>不估：{rv.esc('、'.join(res['不估']))}（没有对应的外盘，或是跨品种组合）。</p>")
     body.append(
         "<div class='card'><h3>怎么看</h3><p class='note'>"
         "外盘分档（小草定的）：0–1% 没波动，1–3% 小，3–6% 大，≥6% 超大；外盘涨、跌分开查历史。<br>"
