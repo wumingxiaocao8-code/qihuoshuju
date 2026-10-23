@@ -582,6 +582,15 @@ def prep() -> None:
     t0 = time.time()
     print(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} 仓储取数（futures_brief.py stock）=====")
     py = Path(sys.executable).with_name("python.exe")  # 任务计划用的是 pythonw，同一个文件夹里的 python 才有输出
+    try:  # 先算日内参考区间（天勤分钟线），stock 生成跨月价差表时一起显示；失败不影响取仓储
+        r = subprocess.run([str(py), str(HERE / "日内区间.py")], cwd=HERE, capture_output=True, timeout=600,
+                           env=os.environ | {"PYTHONIOENCODING": "utf-8"},
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        out = r.stdout.decode("utf-8", errors="replace").strip().splitlines()
+        err = r.stderr.decode("utf-8", errors="replace").strip().splitlines()  # 天勤的免责声明也在 stderr
+        print(out[-1] if r.returncode == 0 and out else "日内区间出错：" + "\n".join((out + err)[-5:]))
+    except subprocess.TimeoutExpired:
+        print("日内区间 10 分钟还没算完，跳过")
     try:
         r = subprocess.run([str(py), str(ROOT / "futures_brief.py"), "stock"], cwd=ROOT, capture_output=True, timeout=1500,
                            env=os.environ | {"PYTHONIOENCODING": "utf-8"},
