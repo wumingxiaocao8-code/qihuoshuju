@@ -9,7 +9,8 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
 每个格子贴一个标签，在「套利分析……」那一行的右边，不盖住图（针画在图的右边缘）：
   ✅ 大概率整根开到针附近（真）  ▲ 大概率开不到针、但离昨收有段距离（半真）  ❌ 大概率假
   ○ 没针  ？ 不判断
-标签左边并排一个小框，两行写两条腿竞价后的盘口：「sc2701 s 11 b 5」= sc2701 卖一挂 11 手（绿）、买一挂 5 手（红）。
+标签左边并排一个小框，两行写两条腿的竞价成交和竞价后的盘口：「sc2701 竞 15 s 11 b 5」= sc2701 竞价成交 15 手（黄）、
+卖一挂 11 手（绿）、买一挂 5 手（红）。
 菜单栏空白处还有一个小提示：等竞价时写「竞价判断：等 20:59」，出错变红字。
 格子对不上就不贴：每次贴之前，把每格标题左边那一小条（合约名）跟 --test 时存的样子比一下（复盘数据/看板样子/），
 翻了页、换了图，那格就不贴；被别的窗口挡住的格子也不贴（菜单栏的小提示也一样），切回博易云 1 秒内贴上。
@@ -19,6 +20,7 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
                                        顺带存下每格标题的样子（换了图、挪了窗口、改了看板.txt 都要重跑一次）
   python 竞价浮层.py --mock 截图.png    不开窗口，把标签画在一张博易云全屏截图上，存成「截图_浮层.png」
                                        （加 --json 某次开盘的 竞价判断.json 用那次的判断，不加用样例）
+  python 竞价浮层.py --json 某个.json --no-check   预览用：不跟 --test 存的样子比，露在外面的格子都贴（看板换了图时会贴错格子）
 """
 import argparse
 import ctypes
@@ -61,6 +63,7 @@ DEFAULTS = {"网格左": 19, "网格上": 47, "网格右": 0, "网格下": 20, "
             "提示左": 560, "提示上": 2, "提示字号": 13}
 ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到哪用；跟标签字号无关
 SELL, BUY, GREY = (60, 200, 110), (255, 95, 95), (170, 170, 170)  # 盘口框：s 卖一量绿、b 买一量红（跟行情软件一样）
+VOL = (235, 200, 80)  # 盘口框：竞 竞价成交手数黄
 HEAD_W, HEAD_H = 0.27, 15  # 比对用的标题条：格子宽度的前 27%、格子最上面 15 像素（合约名那一行；再宽会带进右边时间的第一个字）
 MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就算这格换了
 GAP = 8  # 标签左边离公式那行字至少空 8 像素；放不下全名就去掉组合名，不盖住公式后面的价差数
@@ -287,13 +290,16 @@ def badge(d, kind: str, text: str, right: float, top: float, size: float) -> Non
 
 
 def book_cols(d, book, size: float) -> tuple[list, list]:
-    """盘口框每行的几段字 [(字, 颜色)] 和每一列的宽度（两行按「合约 / s / 卖一量 / b / 买一量」对齐）。
-    book = ((合约, 卖一量, 买一量), …)，一行一条腿；没有的量写 —。"""
+    """盘口框每行的几段字 [(字, 颜色)] 和每一列的宽度（两行按「合约 / 竞 / 竞价手数 / s / 卖一量 / b / 买一量」对齐）。
+    book = ((合约, 竞价手数, 卖一量, 买一量), …)，一行一条腿；没有的量写 —。
+    10-24 以前的 json 只有 (合约, 卖一量, 买一量)，竞价手数当没有。上万手写成「3.4万」，框不会太宽。"""
     def n(x):
-        return "—" if x is None else f"{x:.0f}"
-    rows = [[(c, FG), (" s ", GREY), (n(s), SELL), (" b ", GREY), (n(b), BUY)] for c, s, b in book]
+        return "—" if x is None else f"{x / 10000:.1f}万" if x >= 10000 else f"{x:.0f}"
+    book = [x if len(x) == 4 else (x[0], None, *x[1:]) for x in book]
+    rows = [[(c, FG), (" 竞 ", GREY), (n(v), VOL), (" s ", GREY), (n(s), SELL), (" b ", GREY), (n(b), BUY)]
+            for c, v, s, b in book]
     f = font(size)
-    return rows, [max(d.textlength(r[k][0], font=f) for r in rows) for k in range(5)]
+    return rows, [max(d.textlength(r[k][0], font=f) for r in rows) for k in range(7)]
 
 
 def book_width(d, book, size: float) -> float:
@@ -301,7 +307,7 @@ def book_width(d, book, size: float) -> float:
 
 
 def book_box(d, book, right: float, top: float, size: float) -> None:
-    """标签左边的盘口框：竞价后每条腿卖一、买一挂了几手，右上角对着 (right, top)。"""
+    """标签左边的盘口框：每条腿竞价成交几手、竞价后卖一买一挂了几手，右上角对着 (right, top)。"""
     rows, col = book_cols(d, book, size)
     f, lh, pad = font(size), size * 1.45, size * .5
     x0 = right - sum(col) - pad * 2
@@ -310,7 +316,7 @@ def book_box(d, book, right: float, top: float, size: float) -> None:
     for r, parts in enumerate(rows):
         x, y = x0 + pad, top + pad / 2 + lh * (r + .5)
         for k, (t, c) in enumerate(parts):
-            d.text((x + (col[k] - d.textlength(t, font=f) if k in (2, 4) else 0), y), t, font=f, fill=c, anchor="lm")
+            d.text((x + (col[k] - d.textlength(t, font=f) if k in (2, 4, 6) else 0), y), t, font=f, fill=c, anchor="lm")
             x += col[k]
 
 
@@ -338,7 +344,8 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
     note = 小提示 {"文字", "红"}；show = 要贴的格子 {(行, 列)}（None = 都贴）；scale：截图比真屏幕小时按比例缩；
     outline：画格子边框（--test 用）；ends = 每格公式那行字写到哪（text_ends），
     标签放不下全名时去掉组合名（「sc2701-2612  首笔 …」→「首笔 …」）。
-    每格：标签靠右，盘口框在它左边、顶边对齐。返回贴了标签的格子 {(行, 列): 标签左边在 img 里的 x}（下次量字时躲开标签用）。"""
+    每格：标签靠右，盘口框在它左边、顶边对齐；盘口框会盖住公式后面的价差数时，往下挪一行（还在标签左边，不挡右边的针）。
+    返回贴了标签的格子 {(行, 列): 公式那一行被占到的最左 x}（下次量字时躲开标签用）。"""
     d = ImageDraw.Draw(img)
     b = scaled(board, scale)
     o = b["参数"]
@@ -356,9 +363,12 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
                     text = text.split("  ", 1)[1]
             badge(d, kind, text, right, top, size)
             left = right - badge_width(d, text, size)
+            lefts[(i, j)] = left
             if book:
-                book_box(d, book, left - size * .6, top, size)
-            lefts[(i, j)] = left - extra
+                down = bool(ends and (i, j) in ends and left - extra < x0 + ends[(i, j)] + GAP * o["倍数"])
+                book_box(d, book, left - size * .6, top + (ROW_H * o["倍数"] if down else 0), size)
+                if not down:
+                    lefts[(i, j)] = left - extra
     if note and note.get("文字"):
         chip(d, note["文字"], rect[0] + o["提示左"], rect[1] + o["提示上"], o["提示字号"], note.get("红", False))
     return lefts
@@ -368,7 +378,7 @@ def sample_items(board: dict) -> dict:
     """--test、--mock 的样例：各种符号轮着来，字的写法跟真的一样（组合名 + 首笔区间，右边盘口框的手数是编的）。"""
     items = [x for row in board["格子"] for x in row if pair_key(x)]
     return {pair_key(x): (SAMPLES[n % len(SAMPLES)][0], f"{label_name(*x.split(','))}  {SAMPLES[n % len(SAMPLES)][1]}",
-                          tuple((leg.split(".")[-1], 8 + 37 * k + n % 5, 3 + 52 * k + n % 7)
+                          tuple((leg.split(".")[-1], 15 + 120 * k + n % 9, 8 + 37 * k + n % 5, 3 + 52 * k + n % 7)
                                 for k, leg in enumerate(x.split(","))))
             for n, x in enumerate(items)}
 
@@ -630,7 +640,7 @@ class Overlay:
             user32.DestroyWindow(self.hwnd)
 
 
-def run(json_file: Path | None, test: bool = False, hold: float = 20) -> None:
+def run(json_file: Path | None, test: bool = False, hold: float = 20, check: bool = True) -> None:
     """浮层：盖住博易云所在的那块屏幕，透明、点不到、不抢焦点；每 0.25 秒看一次 json 和博易云窗口，有变化再重画。"""
     dpi_aware()
     raw = read_board()
@@ -714,7 +724,7 @@ def run(json_file: Path | None, test: bool = False, hold: float = 20) -> None:
                 dx = st["pobo"][1][0] - mon[0]  # 浮层图里的 x → 截图里的 x
                 clip = {k: x - dx for k, x in st["lefts"].items()}  # 截图里有自己贴的标签，量字时躲开
                 st["ends"] = text_ends(shot, (0, 0, shot.width, shot.height), b, clip)
-                st["ok"], st["why"] = check_layout(shot, st["pobo"][1], b, st["vis"])
+                st["ok"], st["why"] = check_layout(shot, st["pobo"][1], b, st["vis"]) if check else (None, "")
             except Exception as e:
                 st["ok"], st["why"] = None, f"比对格子出错（{type(e).__name__}），都贴了"
         show = st["vis"] if st["ok"] is None else st["vis"] & st["ok"]
@@ -768,6 +778,7 @@ def main():
     p.add_argument("--hold", type=float, default=20, help="--test 时标签留几秒")
     p.add_argument("--mock", help="把标签画在这张截图上，不开窗口")
     p.add_argument("--out", help="--mock 存到哪")
+    p.add_argument("--no-check", action="store_true", help="预览用：不跟 --test 存的样子比，格子都贴")
     a = p.parse_args()
     if a.mock:
         print(f"画好了：{mock(Path(a.mock), Path(a.json) if a.json else None, Path(a.out) if a.out else None)}")
@@ -775,7 +786,7 @@ def main():
     if not a.test and not a.json:
         p.error("要么 --test，要么 --json（平时由 竞价判断.py 带起来）")
     try:
-        run(Path(a.json) if a.json else None, a.test, a.hold)
+        run(Path(a.json) if a.json else None, a.test, a.hold, not a.no_check)
     except Exception as e:
         import traceback
         print(f"竞价浮层出错：{type(e).__name__} {e}\n{traceback.format_exc()}")

@@ -79,7 +79,7 @@ CLOCK_WARN = 3  # 电脑时钟差 3 秒以上，提示里说一声
 CSV_COLS = ["开盘", "组合", "腿1", "腿2", "品种", "档", "符号", "首笔下沿", "首笔上沿", "理由", "昨收价差", "腿1竞价", "腿2竞价",
             "针", "针偏几档", "门槛", "冷门腿", "冷门腿竞价手数", "冷门腿竞价占持仓‰", "冷门腿竞价持仓变化", "竞价量分",
             "立刻能卖", "立刻能买", "托住几成", "盘口分", "合计", "保留比例下", "保留比例上", "保留比例依据", "腿1盘口宽档",
-            "腿1卖一量", "腿1买一量", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源"]
+            "腿1竞价手数", "腿1卖一量", "腿1买一量", "腿2竞价手数", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源"]
 
 
 # ---------- 判断（实盘、回放、开盘复盘共用） ----------
@@ -231,9 +231,9 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
             row |= {"首笔下沿": rg[0], "首笔上沿": rg[1]}
         name = fl.label_name(s1, s2)
         row["文字"] = f"{name}  首笔 {price(rg[0], t)} ~ {price(rg[1], t)}" if rg else f"{name}  {j['理由']}"
-        for n, s in (("腿1", s1), ("腿2", s2)):  # 竞价后的盘口挂单手数（浮层上标签左边的小框）
+        for n, s in (("腿1", s1), ("腿2", s2)):  # 竞价成交手数和竞价后的盘口挂单手数（浮层上标签左边的小框）
             x = snaps.get(s) or {}
-            row[f"{n}卖一量"], row[f"{n}买一量"] = x.get("卖一量"), x.get("买一量")
+            row[f"{n}竞价手数"], row[f"{n}卖一量"], row[f"{n}买一量"] = x.get("竞价手数"), x.get("卖一量"), x.get("买一量")
         snap_t = [x["时间"] for x in (snaps.get(s1), snaps.get(s2)) if x and x.get("时间")]
         if snap_t:
             row["快照时间"] = f"{max(snap_t):%H:%M:%S.%f}"[:-5]
@@ -339,9 +339,9 @@ def result_json(rows: list, state: dict, note: str, page: Path) -> dict:
 
 
 def book_of(r: dict) -> list:
-    """浮层盘口框：[[腿1, 卖一量, 买一量], [腿2, 卖一量, 买一量]]；两腿都没有快照（没订阅上、已到期）返回空，不画框。"""
-    legs = [[r[n], r.get(f"{n}卖一量"), r.get(f"{n}买一量")] for n in ("腿1", "腿2")]
-    return legs if any(x[1] is not None or x[2] is not None for x in legs) else []
+    """浮层盘口框：[[腿1, 竞价手数, 卖一量, 买一量], [腿2, …]]；两腿都没有快照（没订阅上、已到期）返回空，不画框。"""
+    legs = [[r[n], r.get(f"{n}竞价手数"), r.get(f"{n}卖一量"), r.get(f"{n}买一量")] for n in ("腿1", "腿2")]
+    return legs if any(v is not None for x in legs for v in x[1:]) else []
 
 
 def counts(rows: list) -> str:
