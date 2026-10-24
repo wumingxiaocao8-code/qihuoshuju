@@ -681,11 +681,11 @@ class Overlay:
 
 def stop_key() -> None:
     """紧急关掉：单独一个线程等快捷键，按下就把整个浮层进程结束掉（主线程卡住了也关得掉）。
-    只在浮层开着的这几分钟里占用这个快捷键；被别的程序占了就写进运行日志，还能双击桌面上的「关竞价浮层」。"""
+    只在浮层开着的这几分钟里占用这个快捷键；被别的程序占了就写进运行日志，还能点 × 或双击桌面上的「关竞价浮层」。"""
     def wait():
         mods, vk, name = STOP_KEY
         if not user32.RegisterHotKey(None, 1, mods, vk):
-            print(f"快捷键 {name} 被别的程序占了，紧急关掉只能双击桌面上的「关竞价浮层」")
+            print(f"快捷键 {name} 被别的程序占了，紧急关掉改点小提示右边的 ×，或双击桌面上的「关竞价浮层」")
             return
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
