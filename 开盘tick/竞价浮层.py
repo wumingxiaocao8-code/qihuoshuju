@@ -9,8 +9,10 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
 每个格子贴一个标签，在「套利分析……」那一行的右边，不盖住图（针画在图的右边缘）：
   ✅ 大概率整根开到针附近（真）  ▲ 大概率开不到针、但离昨收有段距离（半真）  ❌ 大概率假
   ○ 没针  ？ 不判断
-标签左边并排一个小框，两行写两条腿的竞价成交和竞价后的盘口：「sc2701 竞 15 s 11 b 5」= sc2701 竞价成交 15 手（黄）、
-卖一挂 11 手（绿）、买一挂 5 手（红）。
+标签左边并排一个小框，两行写两条腿的竞价成交手数：「sc2701 竞 15」= sc2701 竞价成交 15 手（黄）
+（10-24 晚去掉了卖一、买一的挂单手数：两年回放看过，对判断没用）。
+大机会（竞价后立刻能成交那边偏出门槛 2 倍以上）时，sc、nr 跨月格子的符号后面多一个紫块「重3.6」（几倍门槛），
+再按情况加红框「腿2秒进」（主力竞价比腿1 动得少，腿2 晚两秒才进多半亏）、黄框「量少」（冷门腿竞价不到持仓 0.7‰）。
 菜单栏空白处还有一个小提示：等竞价时写「竞价判断：等 20:59」，出错变红字。
 紧急关掉（程序出错、挡住要看的东西时）：按 Ctrl + Alt + Q，标签马上全部消失（博易云在不在前面都行）；
 或者点菜单栏小提示右边的 ×（点它不抢博易云的焦点），或者双击桌面上的「关竞价浮层」（关浮层.pyw）。关掉以后这次开盘不会再出来，竞价判断的网页和 csv 照样写。
@@ -60,13 +62,15 @@ from PIL import Image, ImageDraw, ImageFont, ImageGrab  # noqa: E402
 BG, FG, MUTED, LINE = (24, 28, 36), (240, 240, 240), (160, 160, 160), (90, 96, 110)
 COLORS = {"真": (46, 170, 80), "半真": (245, 166, 35), "假": (235, 70, 70), "没针": (130, 130, 130), "不判断": (130, 130, 130)}
 FONT_FILE = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "msyh.ttc"  # 微软雅黑
+BOLD_FILE = FONT_FILE.with_name("msyhbd.ttc")  # 微软雅黑粗体（重仓标记用）
 # 位置的默认值（按博易云自己的像素，从窗口里面的左上角算）；看板.txt 里写了就用那边的。
 # 博易云不认屏幕缩放（DPI 96），Windows 把它整个放大（这台电脑缩放 150%，放大 1.5 倍），贴到屏幕上时乘这个倍数（dpi_ratio）
 DEFAULTS = {"网格左": 19, "网格上": 47, "网格右": 0, "网格下": 20, "标签上": 20, "标签右": 8, "字号": 10,
             "提示左": 560, "提示上": 2, "提示字号": 13}
 ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到哪用；跟标签字号无关
-SELL, BUY, GREY = (60, 200, 110), (255, 95, 95), (170, 170, 170)  # 盘口框：s 卖一量绿、b 买一量红（跟行情软件一样）
-VOL = (235, 200, 80)  # 盘口框：竞 竞价成交手数黄
+GREY = (170, 170, 170)  # 盘口框里的「竞」
+VOL = (235, 200, 80)  # 盘口框：竞价成交手数黄
+TAG_COLORS = {"重": (150, 70, 225), "快": (235, 70, 70), "少": VOL}  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框
 HEAD_W, HEAD_H = 0.27, 15  # 比对用的标题条：格子宽度的前 27%、格子最上面 15 像素（合约名那一行；再宽会带进右边时间的第一个字）
 MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就算这格换了
 GAP = 8  # 标签左边离公式那行字至少空 8 像素；放不下全名就去掉组合名，不盖住公式后面的价差数
@@ -74,6 +78,8 @@ LIFE = 600  # 最多开 10 分钟（竞价判断.py 出意外没写结果时，�
 QUIET = (3, 5)  # 开盘前 3 秒到开盘后 5 秒不截屏比对格子（标签照样显示），不跟开盘那一下抢电脑
 SAMPLES = [("真", "首笔 -9.0 ~ -7.6"), ("半真", "首笔 -21 ~ -9"), ("假", "首笔 -8.9 ~ -7.3"),
            ("没针", "首笔 -11 ~ -9"), ("不判断", "竞价没成交")]
+TAG_SAMPLES = {"sc": ("首笔 -4.0 ~ -0.8", (("重2.9", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
+               "nr": ("首笔 -40 ~ -15", (("重2.3", "重"), ("量少", "少")))}
 
 # 用自己的一份 user32，设参数类型不影响同一进程里别的代码
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -260,6 +266,10 @@ def font(size: float):
     return ImageFont.truetype(str(FONT_FILE), max(6, round(size)))
 
 
+def bold(size: float):
+    return ImageFont.truetype(str(BOLD_FILE if BOLD_FILE.exists() else FONT_FILE), max(6, round(size)))
+
+
 def symbol(d, kind: str, x: float, y: float, s: float) -> None:
     """画符号（Tk 和截图都显示不了彩色 emoji，自己画）：✅ 绿底白勾、▲ 橙色三角、❌ 红叉、○ 灰圈、？ 灰问号。
     x, y 是左上角，s 是边长。"""
@@ -279,34 +289,48 @@ def symbol(d, kind: str, x: float, y: float, s: float) -> None:
         d.text((x + s / 2, y + s / 2), "?", font=font(s), fill=c, anchor="mm")
 
 
-def badge_width(d, text: str, size: float) -> float:
+def tag_width(d, t: str, size: float) -> float:
+    """一个重仓标记（「重3.6」「腿2秒进」「量少」）连同后面的空隙有多宽。"""
+    return d.textlength(t, font=bold(size)) + size * 1.0
+
+
+def badge_width(d, text: str, size: float, tags=()) -> float:
     pad = size * .45
-    return pad + size + pad * .8 + d.textlength(text, font=font(size)) + pad
+    return pad + size + pad * .8 + sum(tag_width(d, t, size) for t, _ in tags) + d.textlength(text, font=font(size)) + pad
 
 
-def badge(d, kind: str, text: str, right: float, top: float, size: float) -> None:
-    """一个标签，右上角对着 (right, top)；size = 字号（像素）。"""
+def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=()) -> None:
+    """一个标签，右上角对着 (right, top)；size = 字号（像素）。
+    tags = 重仓标记 ((字, 样式), …)，画在符号后面：样式「重」紫底白字，「快」红框红字，「少」黄框黄字。"""
     f = font(size)
     pad, s, h = size * .45, size * 1.0, size * 1.5
-    x0 = right - badge_width(d, text, size)
+    x0 = right - badge_width(d, text, size, tags)
     d.rounded_rectangle([x0, top, right, top + h], radius=size * .3, fill=BG, outline=COLORS[kind],
                         width=max(1, round(size / 14)))
     symbol(d, kind, x0 + pad, top + (h - s) / 2, s)
-    d.text((x0 + pad + s + pad * .8, top + h / 2), text, font=f, fill=MUTED if kind in ("没针", "不判断") else FG,
-           anchor="lm")
+    x = x0 + pad + s + pad * .8
+    for t, style in tags:
+        tw, c = tag_width(d, t, size) - size * .3, TAG_COLORS.get(style, MUTED)
+        box = [x, top + h * .12, x + tw, top + h * .88]
+        if style == "重":
+            d.rounded_rectangle(box, radius=size * .25, fill=c)
+        else:
+            d.rounded_rectangle(box, radius=size * .25, outline=c, width=max(1, round(size / 9)))
+        d.text((x + tw / 2, top + h / 2), t, font=bold(size), fill=(255, 255, 255) if style == "重" else c, anchor="mm")
+        x += tw + size * .3
+    d.text((x, top + h / 2), text, font=f, fill=MUTED if kind in ("没针", "不判断") else FG, anchor="lm")
 
 
 def book_cols(d, book, size: float) -> tuple[list, list]:
-    """盘口框每行的几段字 [(字, 颜色)] 和每一列的宽度（两行按「合约 / 竞 / 竞价手数 / s / 卖一量 / b / 买一量」对齐）。
-    book = ((合约, 竞价手数, 卖一量, 买一量), …)，一行一条腿；没有的量写 —。
-    10-24 以前的 json 只有 (合约, 卖一量, 买一量)，竞价手数当没有。上万手写成「3.4万」，框不会太宽。"""
+    """盘口框每行的几段字 [(字, 颜色)] 和每一列的宽度（两行按「合约 / 竞 / 竞价手数」对齐）。
+    book = ((合约, 竞价手数), …)，一行一条腿；没有的写 —。上万手写成「3.4万」，框不会太宽。
+    以前的 json 是 (合约, 竞价手数, 卖一量, 买一量)，更早的是 (合约, 卖一量, 买一量)：10-24 晚起只画竞价手数，挂单量不画。"""
     def n(x):
         return "—" if x is None else f"{x / 10000:.1f}万" if x >= 10000 else f"{x:.0f}"
-    book = [x if len(x) == 4 else (x[0], None, *x[1:]) for x in book]
-    rows = [[(c, FG), (" 竞 ", GREY), (n(v), VOL), (" s ", GREY), (n(s), SELL), (" b ", GREY), (n(b), BUY)]
-            for c, v, s, b in book]
+    book = [(x[0], None if len(x) == 3 else x[1]) for x in book]
+    rows = [[(c, FG), (" 竞 ", GREY), (n(v), VOL)] for c, v in book]
     f = font(size)
-    return rows, [max(d.textlength(r[k][0], font=f) for r in rows) for k in range(7)]
+    return rows, [max(d.textlength(r[k][0], font=f) for r in rows) for k in range(3)]
 
 
 def book_width(d, book, size: float) -> float:
@@ -314,7 +338,7 @@ def book_width(d, book, size: float) -> float:
 
 
 def book_box(d, book, right: float, top: float, size: float) -> None:
-    """标签左边的盘口框：每条腿竞价成交几手、竞价后卖一买一挂了几手，右上角对着 (right, top)。"""
+    """标签左边的盘口框：每条腿竞价成交几手，右上角对着 (right, top)。"""
     rows, col = book_cols(d, book, size)
     f, lh, pad = font(size), size * 1.45, size * .5
     x0 = right - sum(col) - pad * 2
@@ -323,7 +347,7 @@ def book_box(d, book, right: float, top: float, size: float) -> None:
     for r, parts in enumerate(rows):
         x, y = x0 + pad, top + pad / 2 + lh * (r + .5)
         for k, (t, c) in enumerate(parts):
-            d.text((x + (col[k] - d.textlength(t, font=f) if k in (2, 4, 6) else 0), y), t, font=f, fill=c, anchor="lm")
+            d.text((x + (col[k] - d.textlength(t, font=f) if k == 2 else 0), y), t, font=f, fill=c, anchor="lm")
             x += col[k]
 
 
@@ -359,7 +383,8 @@ def scaled(board: dict, scale: float) -> dict:
 
 def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | None, scale: float = 1.0,
          outline: bool = False, ends: dict | None = None, info: dict | None = None) -> dict:
-    """在 img 上画标签。rect = 博易云窗口里面在 img 里的位置；items = {组合: (档, 文字, 盘口)}，盘口见 book_cols（空 = 不画盘口框）；
+    """在 img 上画标签。rect = 博易云窗口里面在 img 里的位置；items = {组合: (档, 文字, 盘口, 重仓标记)}，盘口见 book_cols
+    （空 = 不画盘口框），重仓标记见 badge（没有这一项或空 = 不画）；
     note = 小提示 {"文字", "红"}；show = 要贴的格子 {(行, 列)}（None = 都贴）；scale：截图比真屏幕小时按比例缩；
     outline：画格子边框（--test 用）；ends = 每格公式那行字写到哪（text_ends），
     标签放不下全名时去掉组合名（「sc2701-2612  首笔 …」→「首笔 …」）。
@@ -374,14 +399,15 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
         if outline:
             d.rectangle([x0, y0, x1 - 1, y1 - 1], outline=(0, 200, 255))
         if key in items and (show is None or (i, j) in show):
-            kind, text, book = items[key]
+            kind, text, book, *more = items[key]
+            tags = more[0] if more else ()
             right, top = x1 - o["标签右"], y0 + o["标签上"]
             extra = book_width(d, book, size) + size * .6 if book else 0  # 盘口框在标签左边（比标签高，放左边少挡针）
             if ends and (i, j) in ends and "  " in text:
-                if right - badge_width(d, text, size) - extra < x0 + ends[(i, j)] + GAP * o["倍数"]:
+                if right - badge_width(d, text, size, tags) - extra < x0 + ends[(i, j)] + GAP * o["倍数"]:
                     text = text.split("  ", 1)[1]
-            badge(d, kind, text, right, top, size)
-            left = right - badge_width(d, text, size)
+            badge(d, kind, text, right, top, size, tags)
+            left = right - badge_width(d, text, size, tags)
             lefts[(i, j)] = left
             if book:
                 down = bool(ends and (i, j) in ends and left - extra < x0 + ends[(i, j)] + GAP * o["倍数"])
@@ -395,18 +421,28 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
     return lefts
 
 
+def product(s: str) -> str:
+    """INE.sc2701 → sc"""
+    return re.match(r"[A-Za-z]+", s.split(".")[-1]).group().lower()
+
+
 def sample_items(board: dict) -> dict:
-    """--test、--mock 的样例：各种符号轮着来，字的写法跟真的一样（组合名 + 首笔区间，右边盘口框的手数是编的）。"""
-    items = [x for row in board["格子"] for x in row if pair_key(x)]
-    return {pair_key(x): (SAMPLES[n % len(SAMPLES)][0], f"{label_name(*x.split(','))}  {SAMPLES[n % len(SAMPLES)][1]}",
-                          tuple((leg.split(".")[-1], 15 + 120 * k + n % 9, 8 + 37 * k + n % 5, 3 + 52 * k + n % 7)
-                                for k, leg in enumerate(x.split(","))))
-            for n, x in enumerate(items)}
+    """--test、--mock 的样例：各种符号轮着来，字的写法跟真的一样（组合名 + 首笔区间，右边盘口框的竞价手数是编的）；
+    sc、nr 跨月的格子贴带重仓标记的 ▲（实盘只有大机会时才有）。"""
+    out = {}
+    for n, x in enumerate(x for row in board["格子"] for x in row if pair_key(x)):
+        s1, s2 = x.split(",")
+        (kind, text), tags = SAMPLES[n % len(SAMPLES)], ()
+        if product(s1) == product(s2) and product(s1) in TAG_SAMPLES:
+            kind, (text, tags) = "半真", TAG_SAMPLES[product(s1)]
+        book = tuple((leg.split(".")[-1], 15 + 120 * k + n % 9) for k, leg in enumerate((s1, s2)))
+        out[pair_key(x)] = (kind, f"{label_name(s1, s2)}  {text}", book, tags)
+    return out
 
 
 def items_of(data: dict) -> tuple[dict, dict | None]:
-    """竞价判断.json → (要贴的标签 {组合: (档, 文字, 盘口)}, 小提示)。"""
-    items = ({k: (v["档"], v["文字"], tuple(tuple(x) for x in v.get("盘口") or ()))
+    """竞价判断.json → (要贴的标签 {组合: (档, 文字, 盘口, 重仓标记)}, 小提示)。"""
+    items = ({k: (v["档"], v["文字"], tuple(tuple(x) for x in v.get("盘口") or ()), tuple(tuple(x) for x in v.get("标记") or ()))
               for k, v in (data.get("组合") or {}).items()} if data.get("状态") == "结果" else {})
     return items, {"文字": data.get("提示", ""), "红": bool(data.get("红"))}
 
