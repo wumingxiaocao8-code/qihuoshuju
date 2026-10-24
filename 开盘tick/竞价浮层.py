@@ -13,7 +13,7 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
 卖一挂 11 手（绿）、买一挂 5 手（红）。
 菜单栏空白处还有一个小提示：等竞价时写「竞价判断：等 20:59」，出错变红字。
 紧急关掉（程序出错、挡住要看的东西时）：按 Ctrl + Alt + Q，标签马上全部消失（博易云在不在前面都行）；
-或者双击桌面上的「关竞价浮层」（关浮层.pyw）。关掉以后这次开盘不会再出来，竞价判断的网页和 csv 照样写。
+或者点菜单栏小提示右边的 ×（点它不抢博易云的焦点），或者双击桌面上的「关竞价浮层」（关浮层.pyw）。关掉以后这次开盘不会再出来，竞价判断的网页和 csv 照样写。
 格子对不上就不贴：每次贴之前，把每格标题左边那一小条（合约名）跟 --test 时存的样子比一下（复盘数据/看板样子/），
 翻了页、换了图，那格就不贴；被别的窗口挡住的格子也不贴（菜单栏的小提示也一样），切回博易云 1 秒内贴上。
 
@@ -117,6 +117,7 @@ WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_EX_TOOLWINDOW, WS_EX_LAYERED, WS_EX_NOACTIV
 WS_POPUP, SW_SHOWNOACTIVATE, WM_TIMER, ULW_ALPHA = 0x80000000, 4, 0x0113, 2
 HWND_TOPMOST = -1
 WM_HOTKEY, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0312, 0x1, 0x2, 0x4000
+WM_MOUSEACTIVATE, MA_NOACTIVATE, WM_LBUTTONUP, SW_HIDE = 0x0021, 3, 0x0202, 0
 STOP_KEY = (MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord("Q"), "Ctrl + Alt + Q")  # 紧急关掉浮层的快捷键
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -327,12 +328,24 @@ def book_box(d, book, right: float, top: float, size: float) -> None:
 
 
 def chip(d, text: str, x: float, y: float, size: float, red: bool = False) -> None:
-    """菜单栏空白处的小提示。"""
+    """菜单栏空白处的小提示。返回它的框 (左, 上, 右, 下)，× 按钮贴在它右边。"""
     f = font(size)
     pad = size * .5
-    d.rounded_rectangle([x, y, x + d.textlength(text, font=f) + pad * 2, y + size * 1.45], radius=size * .3, fill=BG,
-                        outline=COLORS["假"] if red else LINE)
+    box = (x, y, x + d.textlength(text, font=f) + pad * 2, y + size * 1.45)
+    d.rounded_rectangle(box, radius=size * .3, fill=BG, outline=COLORS["假"] if red else LINE)
     d.text((x + pad, y + size * .72), text, font=f, fill=(255, 130, 130) if red else FG, anchor="lm")
+    return box
+
+
+def close_button(side: int):
+    """× 按钮的图：边长 side 的小方块。"""
+    img = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, side - 1, side - 1], radius=side * .2, fill=BG, outline=COLORS["假"], width=max(1, side // 14))
+    m, w = side * .3, max(2, round(side / 9))
+    d.line([m, m, side - m, side - m], fill=(255, 130, 130), width=w)
+    d.line([m, side - m, side - m, m], fill=(255, 130, 130), width=w)
+    return img
 
 
 def scaled(board: dict, scale: float) -> dict:
@@ -345,7 +358,7 @@ def scaled(board: dict, scale: float) -> dict:
 
 
 def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | None, scale: float = 1.0,
-         outline: bool = False, ends: dict | None = None) -> dict:
+         outline: bool = False, ends: dict | None = None, info: dict | None = None) -> dict:
     """在 img 上画标签。rect = 博易云窗口里面在 img 里的位置；items = {组合: (档, 文字, 盘口)}，盘口见 book_cols（空 = 不画盘口框）；
     note = 小提示 {"文字", "红"}；show = 要贴的格子 {(行, 列)}（None = 都贴）；scale：截图比真屏幕小时按比例缩；
     outline：画格子边框（--test 用）；ends = 每格公式那行字写到哪（text_ends），
@@ -376,7 +389,9 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
                 if not down:
                     lefts[(i, j)] = left - extra
     if note and note.get("文字"):
-        chip(d, note["文字"], rect[0] + o["提示左"], rect[1] + o["提示上"], o["提示字号"], note.get("红", False))
+        box = chip(d, note["文字"], rect[0] + o["提示左"], rect[1] + o["提示上"], o["提示字号"], note.get("红", False))
+        if info is not None:
+            info["提示"] = box
     return lefts
 
 
@@ -589,22 +604,35 @@ class Overlay:
     """盖住整块屏幕的透明窗口。直接用 Windows 的分层窗口，不用 tkinter（tkinter 一建窗口就会抢走键盘焦点，哪怕窗口是藏着的）。
     点不到（鼠标穿过去）、不抢焦点、不进任务栏、总在最上面。show(图) 把画好的图贴上去：透明的地方 alpha = 0，画的东西都是不透明的。"""
 
-    def __init__(self, mon):
+    def __init__(self, mon, click=None):
+        """click = None：盖住整块屏幕、点不到的浮层；给一个函数：点得到的小按钮（× 关掉），左键松开时调它。
+        小按钮一样不抢焦点：点它的时候博易云还是前台窗口，键盘照样打在博易云里。"""
         self.mon = mon
         inst = kernel32.GetModuleHandleW(None)
-        self._proc = WNDPROC(lambda h, m, w, p: user32.DefWindowProcW(h, m, w, p))  # 留着引用，别被回收
-        wc = WNDCLASSEXW(cbSize=ctypes.sizeof(WNDCLASSEXW), lpfnWndProc=self._proc, hInstance=inst,
-                         lpszClassName="竞价浮层")
+        cls = "竞价浮层" if click is None else "竞价浮层按钮"
+
+        def proc(h, m, w, p):
+            if click is not None:
+                if m == WM_MOUSEACTIVATE:  # 点它不激活（不把焦点从博易云抢过来）
+                    return MA_NOACTIVATE
+                if m == WM_LBUTTONUP:
+                    click()
+                    return 0
+            return user32.DefWindowProcW(h, m, w, p)
+        self._proc = WNDPROC(proc)  # 留着引用，别被回收
+        wc = WNDCLASSEXW(cbSize=ctypes.sizeof(WNDCLASSEXW), lpfnWndProc=self._proc, hInstance=inst, lpszClassName=cls)
         user32.RegisterClassExW(ctypes.byref(wc))  # 同一进程第二次注册会失败，不要紧
-        self.hwnd = user32.CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, "竞价浮层", "竞价浮层",
-            WS_POPUP, mon[0], mon[1], mon[2] - mon[0], mon[3] - mon[1], None, None, inst, None)
+        ex = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | (WS_EX_TRANSPARENT if click is None else 0)
+        self.hwnd = user32.CreateWindowExW(ex, cls, cls, WS_POPUP, mon[0], mon[1], mon[2] - mon[0], mon[3] - mon[1],
+                                           None, None, inst, None)
         if not self.hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
         self.shown = False
 
-    def show(self, img) -> None:
+    def show(self, img, at: tuple | None = None) -> None:
+        """贴图；at = 图左上角在屏幕上的位置（不给 = 这块屏幕的左上角）。"""
         w, h = img.size
+        at = at or (self.mon[0], self.mon[1])
         bmi = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=w, biHeight=-h, biPlanes=1, biBitCount=32)
         screen = user32.GetDC(None)
         mem = gdi32.CreateCompatibleDC(screen)
@@ -614,7 +642,7 @@ class Overlay:
             ctypes.memmove(bits, img.tobytes("raw", "BGRA"), w * h * 4)
             old = gdi32.SelectObject(mem, bmp)
             blend = BLENDFUNCTION(0, 0, 255, 1)  # 按每个像素自己的 alpha 叠上去
-            user32.UpdateLayeredWindow(self.hwnd, screen, ctypes.byref(wt.POINT(self.mon[0], self.mon[1])),
+            user32.UpdateLayeredWindow(self.hwnd, screen, ctypes.byref(wt.POINT(int(at[0]), int(at[1]))),
                                        ctypes.byref(wt.SIZE(w, h)), mem, ctypes.byref(wt.POINT(0, 0)), 0,
                                        ctypes.byref(blend), ULW_ALPHA)
             gdi32.SelectObject(mem, old)
@@ -626,6 +654,11 @@ class Overlay:
             user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
             self.shown = True
         self.top()
+
+    def hide(self) -> None:
+        if self.shown:
+            user32.ShowWindow(self.hwnd, SW_HIDE)
+            self.shown = False
 
     def top(self) -> None:
         user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
@@ -694,6 +727,11 @@ def run(json_file: Path | None, test: bool = False, hold: float = 20, check: boo
     t0 = time.time()
     fg = user32.GetForegroundWindow()
     ov = Overlay(mon)
+
+    def close():
+        print(f"{datetime.now():%H:%M:%S} 点了 ×，浮层关掉")
+        os._exit(0)
+    btn = Overlay(mon, close)
     st = {"data": {}, "mtime": None, "sig": None, "ok": None, "why": "", "next_check": 0.0,
           "next_find": 0.0, "pobo": pobo, "board": board, "vis": set(), "chip": False, "ends": {}, "lefts": {}}
     if shot is not None:
@@ -726,6 +764,8 @@ def run(json_file: Path | None, test: bool = False, hold: float = 20, check: boo
             else:
                 st["vis"], st["chip"] = set(), False
             ov.top()
+            if btn.shown:
+                btn.top()
         b = st["board"]
         if test:
             items, note, outline = sample_items(raw), {"文字": f"竞价浮层 示例：位置对不对？{hold:.0f} 秒后消失"}, True
@@ -762,9 +802,16 @@ def run(json_file: Path | None, test: bool = False, hold: float = 20, check: boo
             st["sig"] = sig
             img = Image.new("RGBA", (mon[2] - mon[0], mon[3] - mon[1]), (0, 0, 0, 0))
             r = (rect[0] - mon[0], rect[1] - mon[1], rect[2] - mon[0], rect[3] - mon[1])
+            info = {}
             st["lefts"] = draw(img, r, b, items if st["pobo"] else {}, note, show,
-                               outline=outline and bool(st["pobo"]), ends=st["ends"])
+                               outline=outline and bool(st["pobo"]), ends=st["ends"], info=info)
             ov.show(img)
+            if "提示" in info:  # × 按钮贴在小提示右边（小提示没画就不出来，免得浮在别的窗口上）
+                x0, y0, x1, y1 = info["提示"]
+                side = max(12, round(y1 - y0))
+                btn.show(close_button(side), (mon[0] + x1 + side * .3, mon[1] + y0))
+            else:
+                btn.hide()
             if test and not st.get("told"):
                 st["told"] = True
                 now_fg = user32.GetForegroundWindow()
