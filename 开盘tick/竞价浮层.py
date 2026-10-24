@@ -12,6 +12,8 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
 标签左边并排一个小框，两行写两条腿的竞价成交和竞价后的盘口：「sc2701 竞 15 s 11 b 5」= sc2701 竞价成交 15 手（黄）、
 卖一挂 11 手（绿）、买一挂 5 手（红）。
 菜单栏空白处还有一个小提示：等竞价时写「竞价判断：等 20:59」，出错变红字。
+紧急关掉（程序出错、挡住要看的东西时）：按 Ctrl + Alt + Q，标签马上全部消失（博易云在不在前面都行）；
+或者双击桌面上的「关竞价浮层」（关浮层.pyw）。关掉以后这次开盘不会再出来，竞价判断的网页和 csv 照样写。
 格子对不上就不贴：每次贴之前，把每格标题左边那一小条（合约名）跟 --test 时存的样子比一下（复盘数据/看板样子/），
 翻了页、换了图，那格就不贴；被别的窗口挡住的格子也不贴（菜单栏的小提示也一样），切回博易云 1 秒内贴上。
 
@@ -30,6 +32,7 @@ import os
 import re
 import site
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -113,6 +116,8 @@ GWL_EXSTYLE, GA_ROOT = -20, 2
 WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_EX_TOOLWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE = 0x8, 0x20, 0x80, 0x80000, 0x08000000
 WS_POPUP, SW_SHOWNOACTIVATE, WM_TIMER, ULW_ALPHA = 0x80000000, 4, 0x0113, 2
 HWND_TOPMOST = -1
+WM_HOTKEY, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0312, 0x1, 0x2, 0x4000
+STOP_KEY = (MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord("Q"), "Ctrl + Alt + Q")  # 紧急关掉浮层的快捷键
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
@@ -153,6 +158,7 @@ user32.UpdateLayeredWindow.argtypes = [wt.HWND, wt.HDC, ctypes.POINTER(wt.POINT)
                                        ctypes.POINTER(wt.POINT), wt.COLORREF, ctypes.POINTER(BLENDFUNCTION), wt.DWORD]
 user32.SetTimer.argtypes = [wt.HWND, ctypes.c_size_t, wt.UINT, ctypes.c_void_p]
 user32.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
+user32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
 user32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
 user32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
 kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
@@ -640,9 +646,26 @@ class Overlay:
             user32.DestroyWindow(self.hwnd)
 
 
+def stop_key() -> None:
+    """紧急关掉：单独一个线程等快捷键，按下就把整个浮层进程结束掉（主线程卡住了也关得掉）。
+    只在浮层开着的这几分钟里占用这个快捷键；被别的程序占了就写进运行日志，还能双击桌面上的「关竞价浮层」。"""
+    def wait():
+        mods, vk, name = STOP_KEY
+        if not user32.RegisterHotKey(None, 1, mods, vk):
+            print(f"快捷键 {name} 被别的程序占了，紧急关掉只能双击桌面上的「关竞价浮层」")
+            return
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == WM_HOTKEY:
+                print(f"{datetime.now():%H:%M:%S} 按了 {name}，浮层关掉")
+                os._exit(0)
+    threading.Thread(target=wait, daemon=True).start()
+
+
 def run(json_file: Path | None, test: bool = False, hold: float = 20, check: bool = True) -> None:
     """浮层：盖住博易云所在的那块屏幕，透明、点不到、不抢焦点；每 0.25 秒看一次 json 和博易云窗口，有变化再重画。"""
     dpi_aware()
+    stop_key()
     raw = read_board()
     pobo = find_pobo()
     board = scaled(raw, dpi_ratio(pobo[0]) if pobo else 1.0)
