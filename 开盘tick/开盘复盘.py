@@ -367,10 +367,10 @@ def analyze(folder: Path, open_ts: datetime, s1: str, s2: str, closes: dict, fc)
             if "昨收价差" in rec:
                 rec["首笔变化"] = round(rec["首笔价差"] - rec["昨收价差"], 4)
         for k in (1, 5, 30, 60):
-            w = after[after.index <= o + pd.Timedelta(seconds=k)]
+            w = after[after.index <= o + pd.Timedelta(k, unit="s")]
             if len(w):
                 rec[f"价差{k}秒"] = round(w["价差"].iloc[-1], 4)
-        m = after[after.index <= o + pd.Timedelta(seconds=60)]
+        m = after[after.index <= o + pd.Timedelta(60, unit="s")]
         if len(m):
             rec |= {"首分钟买价差最低": round(m["买价差"].min(), 4), "首分钟卖价差最高": round(m["卖价差"].max(), 4)}
     tick = closes.get(s1, {}).get("最小变动价位") or TICK.get(p)
