@@ -210,7 +210,7 @@ def save_ticks(items: list[str], seconds: int, out: Path) -> None:
     for s1, s2 in pairs:  # 价差：两腿按 0.5 秒对齐
         if s1 not in data or s2 not in data:
             continue
-        raw = pd.concat([data[s1].add_prefix("腿1"), data[s2].add_prefix("腿2")], axis=1).sort_index()
+        raw = pd.concat([data[s1].add_prefix("腿1"), data[s2].add_prefix("腿2")], axis=1, sort=True)
         both = raw.ffill()  # 盘口沿用上一张；均价只属于那半秒，不能沿用
         both = pd.DataFrame({
             "腿1": both["腿1最新价"], "腿2": both["腿2最新价"],

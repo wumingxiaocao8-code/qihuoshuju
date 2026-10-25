@@ -13,6 +13,7 @@
 import csv
 import json
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def main():
     try:
         syms = sorted({symbol(c.strip()) for p in pairs for c in p.split("−")})
         k = {s: api.get_kline_serial(s, 60, data_length=8000) for s in syms}
-        api.wait_update()
+        api.wait_update(deadline=time.time() + 10)  # 收盘后没有新行情，不加期限会一直等（10-23 17:30 就卡了 10 分钟）
         res = {}
         for p in pairs:
             try:

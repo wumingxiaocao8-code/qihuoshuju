@@ -159,7 +159,7 @@ def fetch_klines(contracts: set) -> dict:
 
 def spread_minutes(k1: pd.DataFrame, k2: pd.DataFrame) -> pd.DataFrame:
     """两腿同一分钟都有成交的分钟价差，标上属于哪个交易日（夜盘、夜里算下一个白天）。"""
-    j = k1.join(k2, lsuffix="1", rsuffix="2", how="inner")
+    j = k1.add_suffix("1").join(k2.add_suffix("2"), how="inner")  # 两边列名一样（close、volume），先各加后缀
     j = j[(j["volume1"] > 0) & (j["volume2"] > 0)]
     s = pd.DataFrame({"价差": (j["close1"] - j["close2"]).round(4)})
     day_session = (s.index.hour >= 9) & (s.index.hour < 16)
