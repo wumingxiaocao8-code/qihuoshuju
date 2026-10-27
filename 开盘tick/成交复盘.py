@@ -8,7 +8,8 @@
 
 一、配对：用 trade-data-analysis 技能里的配对脚本（先开先平，腿1 先成交、腿2 固定；不去重）。
   腿2 按「合约.txt」里每个品种的腿2；合约.txt 里没有的品种（比如黄金），文件里只有两个合约时脚本自己认先成交的为腿1。
-  导出文件没有成交编号，同一秒里谁先成交只能按文件顺序（导出是最新的在前，这里倒过来）。
+  合约.txt 里的跨品种组合（如 nr2612-ru2701，10-27 小草说要配）两腿当天都有成交时按跨品种配，腿1 是前一个合约；腿1 那个品种当天还有别的合约时不配、会打印提示。
+  先后按成交编号（10-27 起导出带这一列）；老文件没有成交编号，同一秒里谁先成交只能按文件顺序（导出是最新的在前，这里倒过来）。
   导出只有时分秒：21:00 以后的算前一个交易日晚上的夜盘，0–3 点算夜里，其余算当天白天。
 二、开盘：夜盘 21:00、日盘 9:00 开盘后 10 秒内开的仓（小草定的，没大行情一般就前十秒）。
   列出实际开在多少、平在多少，和 tick 复盘（复盘数据/开盘复盘.csv）里同一次开盘的昨收价差、针、第一次真实成交放一起；
@@ -92,8 +93,10 @@ def night_date(day: str) -> date:
 
 
 def full_time(t: str, day: str) -> pd.Timestamp:
-    """导出的时分秒 → 完整时间。"""
+    """导出的时分秒 → 完整时间；配对器返回的完整日期时间直接保留。"""
     t = t.strip()
+    if re.match(r"\d{4}-\d{2}-\d{2}[ T]", t):
+        return pd.Timestamp(t)
     h = int(t[:2])
     n = night_date(day)
     d = n if h >= 18 else n + timedelta(days=1) if h < 3 else date.fromisoformat(day)
@@ -113,14 +116,52 @@ def normalize(src: Path, day: str, dst: Path) -> None:
     df.to_csv(dst, index=False, encoding="utf-8-sig")
 
 
-def leg2_map() -> dict:
-    """合约.txt 里每个品种的腿2（第二个合约）。"""
-    out = {}
+def prod(c: str) -> str:
+    return re.match(r"[A-Za-z]+", c)[0].lower()
+
+
+def list_pairs() -> list[tuple[str, str]]:
+    """合约.txt 里的组合 (腿1, 腿2)。"""
+    out = []
     for line in LIST_FILE.read_text(encoding="utf-8").splitlines():
         for item in line.split("#")[0].split():
             legs = [x.split(".")[-1] for x in item.split(",")]
             if len(legs) == 2:
-                out.setdefault(re.match(r"[A-Za-z]+", legs[1])[0].lower(), legs[1])
+                out.append((legs[0], legs[1]))
+    return out
+
+
+def leg2_map() -> dict:
+    """合约.txt 里每个品种的腿2（第二个合约）；跨品种组合不算在里面，另外处理。"""
+    out = {}
+    for l1, l2 in list_pairs():
+        if prod(l1) == prod(l2):
+            out.setdefault(prod(l2), l2)
+    return out
+
+
+def cross_leg2(df: pd.DataFrame, leg2: dict) -> dict:
+    """合约.txt 里的跨品种组合（如 nr2612-ru2701），两腿当天都有成交、腿1 那个品种当天又只有这一个合约时，
+    腿1 品种的腿2 就是另一个品种的合约（小草 10-27 说 nr-ru 要配）。
+    跨品种一打开，配对脚本就不再替只有两个合约的品种自己认腿2，这里按同样的规矩（先成交的是腿1）先认好。"""
+    have = set(df["合约"])
+    out = {}
+    for l1, l2 in list_pairs():
+        if prod(l1) == prod(l2) or l1 not in have or l2 not in have:
+            continue
+        if {c for c in have if prod(c) == prod(l1)} != {l1}:
+            print(f"{l1}-{l2}：{prod(l1)} 当天还有别的合约，跨品种没配")
+            continue
+        out[prod(l1)] = l2
+    if not out:
+        return {}
+    order = df.sort_values("成交编号", key=lambda x: pd.to_numeric(x, errors="coerce"), kind="stable", na_position="last") if "成交编号" in df else df
+    taken = set(out.values())
+    for p in {prod(c) for c in have} - set(out) - set(leg2):
+        members = {c for c in have if prod(c) == p}
+        if len(members) == 2 and not members <= taken:
+            first = order[order["合约"].map(prod) == p]["合约"].iloc[0]
+            out[p] = next(c for c in members if c != first)
     return out
 
 
@@ -135,8 +176,12 @@ def pair(day: str, acct: str, skill, leg2: dict) -> dict:
     src = TRADES / f"{day}_账号{acct}.csv"
     norm = PAIRS / f"{day}_账号{acct}_整理.csv"
     normalize(src, day, norm)
-    products = {re.match(r"[A-Za-z]+", c)[0].lower() for c in pd.read_csv(norm, encoding="utf-8-sig")["合约"]}
-    res = skill.analyze(str(norm), "utf-8-sig", {}, 0, False, {p: leg2[p] for p in products if p in leg2}, False)
+    df = pd.read_csv(norm, encoding="utf-8-sig", dtype=str)
+    products = {prod(c) for c in df["合约"]}
+    use = {p: leg2[p] for p in products if p in leg2}
+    cross = cross_leg2(df, use)
+    use |= cross
+    res = skill.analyze(str(norm), "utf-8-sig", {}, 0, bool(cross), use, False)
     (PAIRS / f"{day}_账号{acct}_配对.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     (PAIRS / f"{day}_账号{acct}_配对.md").write_text(skill.render_markdown(res), encoding="utf-8")
     return res
@@ -334,7 +379,9 @@ def write_page(day: str, results: dict, all_opens: list[dict]) -> Path:
             "<h2>盈亏汇总</h2>", summary_section(results, day),
             "<p class='note'>盈亏一律用原文件的「平仓盈亏(逐笔)」（按实际开仓价算的，小草说这才是真正的盈亏；盯市的「平仓盈亏」有时不准），"
             "净盈亏 = 逐笔 − 手续费。按先开先平配对（trade-data-analysis 的配对脚本）。手续费用文件里记的；"
-            "导出没有成交编号，同一秒的先后按文件顺序。</p>"]
+            + ("先后按成交编号（编号小的先成交）。</p>"
+               if all("成交编号" in r["数据概况"]["成交顺序"] for r in results.values())
+               else "有的导出没有成交编号，同一秒的先后按文件顺序。</p>")]
     PAGES.mkdir(parents=True, exist_ok=True)
     f = PAGES / f"{day}_复盘.html"
     f.write_text(page(f"成交复盘 {day}", "".join(body)), encoding="utf-8")

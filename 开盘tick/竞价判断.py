@@ -25,6 +25,8 @@
 首笔区间（第一次真实成交大概在哪），按一档取整（下沿往下、上沿往上）：
   sc、nr 和攒够 60 次开盘的品种（FIT）：最近 150 次开盘（两年回放 + 实盘）的八成范围。顺着针的方向数，离昨收价差几档：下沿 = a + b × 立刻能成交那边偏几档 + c × 针偏几档，
              上沿同样一条，用分位回归（P10、P90）每次开盘前重算。两年回放的考试段：包住约八成（原来九成），针偏出门槛的宽度中位 29 → 23 档。
+  fu、bu（10-27 晚他定的）：同一个办法，但用九成范围（P5、P95），两年回放种子已放好。fu、bu 两年回放：针出门槛的包住 83–89%、
+             宽度中位 22–26 档（老办法 83–93%、23–31 档），首笔没走到区间的 7–14% → 5–9%（分析/2026-10-27/fu和bu回测/小结.md 第六节）。
   还没攒够的品种：「竞价后盘口立刻能成交的价差，两头各放 1 档」和「昨收价差 + 针变化 × 保留比例的八成范围」合在一起。
   保留比例 = 首笔偏几档 ÷ 针偏几档，用开盘复盘.csv 里这次以前、同品种组合、针偏 3 档以上的；
   判成同一种符号的攒够 8 根就只用这种的，否则用全部（够 10 根），再不够用 17%–131%（2026-10-23 从 4 次开盘 30 根针算的）。
@@ -32,7 +34,7 @@
   立刻能成交那边偏出门槛 2 倍以上 = 大机会，记「重3.6」（几倍门槛）；再看两件事：
   主力（腿2）竞价跳空比腿1 小 → 加「腿2秒进」（腿2 晚两秒才进多半亏，10.8 那种）；
   冷门腿竞价不到持仓 0.7‰ → 加「量少」（开盘第一个半秒能成交的手数只有其他大机会的一半到三分之二）。
-  浮层上只在 HEAVY_SHOW 的品种（sc、nr）跨月格子上贴，别的品种只记进 csv 和网页，攒几周对过再说。
+  浮层上只在 HEAVY_SHOW 的品种（sc、nr，10-27 晚起加 fu、bu）跨月格子上贴，别的品种只记进 csv 和网页，攒几周对过再说。
 
 结果：数据/开盘日期_时间/竞价判断.csv（开盘复盘对答案用）、竞价判断/开盘日期_时间.html（网页），
       数据/开盘日期_时间/竞价判断.json（给浮层读）。开盘后 1 分钟（21:01、9:01）标签自动消失。
@@ -86,12 +88,14 @@ RET_DEFAULT = (0.17, 1.31)  # 2026-10-23 从 4 次开盘 30 根针算的八成�
 MIX = {p: 0.9 for p in rv.NEEDLE_GATE}  # 第 2 步改成猜首笔 = 昨收价差 + 0.9 ×（立刻能成交那边 − 昨收价差）；sc 0.7–0.95 成绩差不多
 # 混合版猜的首笔差门槛几档以内也算 ▲、不判 ❌（他定的：真针判成 ❌ 最怕，假针判成 ▲ 无所谓）：sc 5 档，别的品种按门槛的三分之一
 SLACK = {p: round(g / 3) for p, g in rv.NEEDLE_GATE.items()}
+HALF = 0.5  # 标签上的「首笔半」= 昨收价差 + HALF ×（猜首笔 − 昨收价差）
 FIT = tuple(rv.NEEDLE_GATE)  # 首笔区间用最近 150 次开盘的分位回归（有两年回放种子的 sc、nr 马上用；别的品种攒够 60 次开盘前还用老办法）
 FIT_N, FIT_MIN, FIT_Q = 150, 60, (0.1, 0.9)  # 最近 150 次开盘，不够 60 次用老办法；八成范围（P10–P90）
+FIT_Q_BY = {"fu": (0.05, 0.95), "bu": (0.05, 0.95)}  # 按品种另设：fu、bu 用九成（10-27 晚他定的；八成在 fu、bu 上窄了但少包住，九成跟老办法包住得差不多、更窄）
 SEED = rv.REVIEW / "两年回放_{}.csv"  # 两年回放切出来的开盘（只留本机），跟开盘复盘.csv 的实盘行一起用
 # ---- 重仓标记（2026-10-24 晚，sc、nr、lu 两年 L2 回放：分析/2026-10-24/大波动指标/小结.md 第 7 节）----
 HEAVY = 2.0  # 立刻能成交那边偏出门槛 2 倍以上 = 大机会：不判 ❌（两年 5 次被判 ❌ 的全开到了门槛外），记「重仓标记」
-HEAVY_SHOW = ("sc", "nr")  # 浮层只在这几个品种的跨月格子上贴重仓标记（只验了这两个），别的品种只记进 csv 和网页
+HEAVY_SHOW = ("sc", "nr", "fu", "bu")  # 浮层只在这几个品种的跨月格子上贴重仓标记（验过的：sc、nr 10-24，fu、bu 10-27 上期所两年回放），别的品种只记进 csv 和网页
 TAG_STYLE = {"腿2秒进": "快", "量少": "少"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框
 SYMBOL = {"真": "✅", "半真": "▲", "假": "❌", "没针": "○", "不判断": "？"}
 SAY = {"真": "大概率整根开到", "半真": "大概率开到一部分", "假": "大概率开不到（假）"}
@@ -108,7 +112,7 @@ CSV_COLS = ["开盘", "组合", "腿1", "腿2", "品种", "档", "符号", "首�
             "针", "针偏几档", "门槛", "冷门腿", "冷门腿竞价手数", "冷门腿竞价占持仓‰", "冷门腿竞价持仓变化", "竞价量分",
             "立刻能卖", "立刻能买", "托住几成", "盘口分", "合计", "保留比例下", "保留比例上", "保留比例依据", "腿1盘口宽档",
             "腿1竞价手数", "腿1卖一量", "腿1买一量", "腿2竞价手数", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源",
-            "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记"]
+            "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "首笔半"]
 
 
 # ---------- 判断（实盘、回放、开盘复盘共用） ----------
@@ -286,7 +290,7 @@ _FITS = {}  # (品种, 开盘) → 拟合结果，同一次开盘只算一次
 
 
 def range_fit(past, before: datetime, product: str) -> dict | None:
-    """首笔区间的分位回归：两年回放（SEED）+ 开盘复盘.csv 里 before 以前的开盘，取最近 FIT_N 次。
+    """首笔区间的分位回归：两年回放（SEED）+ 开盘复盘.csv 里 before 以前的开盘，取最近 FIT_N 次独立开盘的全部有效组合。
     顺着针的方向，首笔偏几档 Y 的 P10、P90 各拟合一条 a + b × E + c × X。不够 FIT_MIN 次、或算不出来，返回 None（用老办法）。"""
     key = (product, before)
     if key in _FITS:
@@ -302,17 +306,21 @@ def range_fit(past, before: datetime, product: str) -> dict | None:
         d = pd.concat(parts, ignore_index=True)  # 两年回放在前、实盘在后：同一次开盘两边都有的，留实盘的
         d = d[pd.to_datetime(d["开盘"], format="%Y-%m-%d %H:%M", errors="coerce") < pd.Timestamp(before)]
         d = d.dropna(subset=["昨收价差", "针偏几档", "首笔偏几档", "立刻能卖", "立刻能买"])
-        d = d.drop_duplicates(["开盘", "组合"], keep="last").sort_values("开盘").tail(FIT_N)
-        if len(d) < FIT_MIN:
+        d = d.drop_duplicates(["开盘", "组合"], keep="last").sort_values("开盘")
+        openings = d["开盘"].drop_duplicates().tail(FIT_N)  # 同场多个组合只算一次开盘，窗口内保留全部组合
+        if len(openings) < FIT_MIN:
             return None
+        d = d[d["开盘"].isin(openings)]
         rows = [axes(r["针偏几档"], r["昨收价差"], r["立刻能卖"], r["立刻能买"], t) + (r["首笔偏几档"],) for _, r in d.iterrows()]
         A = [[1.0, e, x] for s, x, e, y in rows]
         Y = [s * y for s, x, e, y in rows]
-        lo, hi = (qreg(A, Y, q) for q in FIT_Q)
+        qs = FIT_Q_BY.get(product, FIT_Q)
+        lo, hi = (qreg(A, Y, q) for q in qs)
     except Exception as e:  # 种子文件坏了、scipy 没装好、算不出来：用老办法，不耽误判断
         print(f"{product} 首笔区间的分位回归没算出来，用老办法：{type(e).__name__} {e}")
         return None
-    _FITS[key] = {"下": lo, "上": hi, "次数": len(d), "起": d["开盘"].iloc[0], "止": d["开盘"].iloc[-1]}
+    _FITS[key] = {"下": lo, "上": hi, "次数": len(openings), "起": d["开盘"].iloc[0], "止": d["开盘"].iloc[-1],
+                  "几成": f"{'零一二三四五六七八九十'[round((qs[1] - qs[0]) * 10)]}成"}
     return _FITS[key]
 
 
@@ -346,7 +354,7 @@ def fit_range(j: dict, t: float, fit: dict | None) -> tuple | None:
 
 def fit_note(fit: dict) -> str:
     a, b = fit["下"], fit["上"]
-    return (f"最近 {fit['次数']} 次开盘（{fit['起'][:10]} ~ {fit['止'][:10]}）的八成范围：顺着针的方向，"
+    return (f"最近 {fit['次数']} 次开盘（{fit['起'][:10]} ~ {fit['止'][:10]}）的{fit.get('几成', '八成')}范围：顺着针的方向，"
             f"下沿 {a[0]:+.1f} {a[1]:+.2f}×E {a[2]:+.2f}×X 档、上沿 {b[0]:+.1f} {b[1]:+.2f}×E {b[2]:+.2f}×X 档"
             "（E = 立刻能成交那边偏几档，X = 针偏几档）")
 
@@ -383,8 +391,11 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
         if rg:
             row |= {"首笔下沿": rg[0], "首笔上沿": rg[1]}
         name = fl.label_name(s1, s2)
-        guess = f"{j['猜首笔']:.{decimals(t) + 1}f} " if j.get("猜首笔") is not None else ""  # 混合版猜的首笔，写在区间前面
-        row["文字"] = (f"{name}  首笔 {guess}({price(rg[0], t)} ~ {price(rg[1], t)})" if rg and guess else
+        guess = f"{j['猜首笔']:.{decimals(t) + 1}f}" if j.get("猜首笔") is not None else ""  # 混合版猜的首笔，写在区间前面
+        if guess:  # 首笔半 = 昨收价差 + (猜首笔 − 昨收价差) × 0.5（10-25 他定的，跟猜首笔并排写）
+            row["首笔半"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * HALF, decimals(t) + 1)
+        row["文字"] = (f"{name}  首笔 {guess}  首笔半 {row['首笔半']:.{decimals(t) + 1}f}\n"  # 两行：浮层把第二行写在下面
+                      f"首笔区间 ({price(rg[0], t)} ~ {price(rg[1], t)})" if rg and guess else
                       f"{name}  首笔 {price(rg[0], t)} ~ {price(rg[1], t)}" if rg else f"{name}  {j['理由']}")
         for n, s in (("腿1", s1), ("腿2", s2)):  # 竞价成交手数（浮层上标签左边的小框）和竞价后的盘口挂单手数（只记进 csv）
             x = snaps.get(s) or {}
@@ -567,7 +578,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
         sym = r["符号"] + (f"<br><span class='note'>v1 {SYMBOL[v1]}</span>" if v1 and v1 != r["档"] else "")
         tab.append([rv.Raw(f"<span class='k k{r['档']}'>{sym}</span>"), r["组合"],
                     f"{price(r.get('首笔下沿'), t)} ~ {price(r.get('首笔上沿'), t)}" if r.get("首笔下沿") is not None else "",
-                    price(r.get("猜首笔"), t / 10), price(r.get("昨收价差"), t), price(r.get("针"), t),
+                    price(r.get("猜首笔"), t / 10), price(r.get("首笔半"), t / 10), price(r.get("昨收价差"), t), price(r.get("针"), t),
                     f"{rv.fmt(r.get('针偏几档'), 1, plus=True)}（门槛 {r['门槛']}）" if r.get("门槛") else rv.fmt(r.get("针偏几档"), 1, plus=True),
                     rv.fmt(r.get("冷门腿竞价占持仓‰"), 2), rv.fmt(r.get("冷门腿竞价持仓变化"), 0, plus=True),
                     price(r.get("立刻能卖"), t), price(r.get("立刻能买"), t),
@@ -576,7 +587,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                     f"{rv.fmt(r['腿1跳空档'], 1, plus=True)} / {rv.fmt(r['腿2跳空档'], 1, plus=True)}" if r.get("腿1跳空档") is not None else "",
                     (r["重仓标记"] + ("" if tags_of(r) else "（浮层不贴，只记录）")) if r.get("重仓标记") else "",
                     ov.get(r["组合"], ""), rv.Raw(f"<span class='why'>{rv.esc(r.get('理由', ''))}</span>")])
-    body.append(rv.table(["", "组合", "首笔区间", "猜首笔", "昨收价差", "针", "针偏几档", "冷门腿竞价占持仓‰", "竞价后持仓变化",
+    body.append(rv.table(["", "组合", "首笔区间", "猜首笔", "首笔半", "昨收价差", "针", "针偏几档", "冷门腿竞价占持仓‰", "竞价后持仓变化",
                           "立刻能卖", "立刻能买", "托住针", "立刻能成交几倍门槛", "合计", "跳空档 腿1 / 主力", "重仓标记", "外盘", "理由"], tab))
     mixed = "，".join(f"{'、'.join(ps)} 系数 {k}" for k, ps in grouped(MIX).items())
     fits = list(dict.fromkeys(f"{r['品种']}：{r['区间依据']}" for r in rows if r.get("区间依据") and r.get("保留比例依据") is None))
@@ -657,13 +668,17 @@ def read_live(folder: Path) -> dict:
 
 def review_cols(j: dict, first) -> dict:
     """开盘复盘.csv 里加的几列：59分判断、判断得分、托住几成、预计首笔区间、首笔在区间里、判断来源、
-    v1判断（混合版之前的实盘没有这一列，就是 59分判断）、立刻能卖、立刻能买（以后拟合首笔区间用）；首笔上下沿不写进表格。"""
+    v1判断（混合版之前的实盘没有这一列，就是 59分判断）、立刻能卖、立刻能买（以后拟合首笔区间用）、
+    猜首笔、首笔半（和竞价判断网页、浮层上的一样：首笔半 = 昨收价差 + HALF ×（猜首笔 − 昨收价差））；首笔上下沿不写进表格。"""
     lo, hi = num(j.get("首笔下沿")), num(j.get("首笔上沿"))
     v1 = j.get("v1档")
+    guess, base = num(j.get("猜首笔")), num(j.get("昨收价差"))
+    half = round(base + (guess - base) * HALF, 4) if guess is not None and base is not None else None  # 没有猜首笔（v1 或没判）就空着
     out = {"59分判断": j.get("档", ""), "判断得分": num(j.get("合计")), "托住几成": num(j.get("托住几成")),
            "判断来源": j.get("来源", ""), "首笔下沿": lo, "首笔上沿": hi,
            "v1判断": v1 if isinstance(v1, str) and v1 else j.get("档", ""),
-           "立刻能卖": num(j.get("立刻能卖")), "立刻能买": num(j.get("立刻能买"))}
+           "立刻能卖": num(j.get("立刻能卖")), "立刻能买": num(j.get("立刻能买")),
+           "猜首笔": guess, "首笔半": half}
     if lo is not None and hi is not None:
         out["预计首笔区间"] = f"{rv.fmt(lo, 4)} ~ {rv.fmt(hi, 4)}"
         f = num(first)

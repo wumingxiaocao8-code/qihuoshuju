@@ -16,7 +16,7 @@
   python 开盘tick.py SHFE.cu2612,SHFE.cu2701 SHFE.au2612   临时指定合约
   合约写法：交易所.代码，如 SHFE.ag2612、INE.sc2701、DCE.i2701、CZCE.MA701（郑商所三位年月、大写）。
   逗号连起来的是一组价差，价差 = 腿1 − 腿2（先写腿1）。
-可选：--seconds 60  开盘后取几秒；--out 目录  默认本文件夹下的「数据」。
+可选：--seconds 60  开盘后取几秒；--out 目录  默认本文件夹下的「数据」，指定其他目录时只取数，不更新正式复盘。
 """
 import argparse
 import json
@@ -117,9 +117,14 @@ def fetch(api: TqApi, symbol: str) -> pd.DataFrame:
     df.index = df.index.floor("500ms")
     df = df[~df.index.duplicated(keep="last")].copy()
     d = df["volume"].diff()
-    df["成交手数"] = d.mask(d < 0, df["volume"])  # 新交易日成交量从 0 重新累计
+    # 夜盘归下一个交易日；周五夜盘、周六凌晨和周一早盘属于同一交易日。
+    # 节前没有夜盘，节后早盘会自然与上一张快照分属不同日期。
+    days = pd.Series((df.index + pd.Timedelta(hours=6)).normalize(), index=df.index)
+    days += pd.to_timedelta(days.dt.day_of_week.map({5: 2, 6: 1}).fillna(0), unit="D")
+    reset = (d < 0) | (days.shift().notna() & days.ne(days.shift()))
+    df["成交手数"] = d.mask(reset, df["volume"])  # 换交易日时即使新累计量更大，也从 0 算
     amt = df["amount"].diff()
-    amt = amt.mask(d < 0, df["amount"])
+    amt = amt.mask(reset, df["amount"])
     # 这半秒的平均成交价 = 成交额增量 ÷ (成交手数 × 合约乘数)；快照之间的真实成交只能这样看
     mult = api.get_quote(symbol).volume_multiple
     df["均价"] = (amt / (df["成交手数"] * mult)).where(df["成交手数"] > 0).round(2)
@@ -211,7 +216,9 @@ def save_ticks(items: list[str], seconds: int, out: Path) -> None:
         if s1 not in data or s2 not in data:
             continue
         raw = pd.concat([data[s1].add_prefix("腿1"), data[s2].add_prefix("腿2")], axis=1, sort=True)
-        both = raw.ffill()  # 盘口沿用上一张；均价只属于那半秒，不能沿用
+        # 只在整条腿没有新快照的时点沿用上一张；快照里明确缺失的盘口必须保留为空。
+        both = pd.concat([data[s1].reindex(raw.index, method="ffill").add_prefix("腿1"),
+                          data[s2].reindex(raw.index, method="ffill").add_prefix("腿2")], axis=1)
         both = pd.DataFrame({
             "腿1": both["腿1最新价"], "腿2": both["腿2最新价"],
             "价差": both["腿1最新价"] - both["腿2最新价"],
@@ -232,7 +239,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("symbols", nargs="*")
     p.add_argument("--seconds", type=int, default=60)
-    p.add_argument("--out", default=str(HERE / "数据"))
+    p.add_argument("--out", default=str(HERE / "数据"), help="取数目录；指定其他目录时不更新正式复盘")
     args = p.parse_args()
     out = Path(args.out)
     print(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} 开始 =====")

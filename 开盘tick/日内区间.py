@@ -63,7 +63,7 @@ def bars(k) -> pd.DataFrame:
 def one(pair: str, k: dict) -> dict:
     a, b = [s.strip() for s in pair.split("−")]
     df = bars(k[symbol(a)]).merge(bars(k[symbol(b)]), on="t", suffixes=("_a", "_b"))
-    df = df[(df.vol_a > 0) & (df.vol_b > 0)].copy()
+    df = df[(df.vol_a > 0) & (df.vol_b > 0)].sort_values("t").copy()
     if df.empty:
         return {"备注": "近期两条腿没有同一分钟都成交的时候"}
     df["s"] = df.close_a - df.close_b
@@ -73,14 +73,18 @@ def one(pair: str, k: dict) -> dict:
     if g.empty:
         return {"备注": f"每天两腿都有成交的分钟数不到 {MIN_BARS}，成交太少"}
     amp = g["max"] - g["min"]
-    med, center = float(amp.median()), float(g["last"].iloc[-1])
+    latest = df.iloc[-1]  # 中心用最新有效分钟；每天至少 30 根的门槛只用于振幅统计
+    med, center = float(amp.median()), float(latest["s"])
     notes = []
     if len(g) < DAYS:
         notes.append(f"只有 {len(g)} 天数据")
+    if latest["d"] != g.index[-1]:
+        notes.append(f"最新交易日有效分钟不足 {MIN_BARS}，振幅样本截至 {g.index[-1]:%Y-%m-%d}；中心仍用最新分钟价差")
     if med > 0 and amp.iloc[-1] > WILD * med:
-        notes.append(f"最近一天振幅 {amp.iloc[-1]:g} 是平时的 {amp.iloc[-1] / med:.1f} 倍，行情异常，区间参考性差")
+        notes.append(f"振幅样本最后一天（{g.index[-1]:%Y-%m-%d}）振幅 {amp.iloc[-1]:g} 是平时的 {amp.iloc[-1] / med:.1f} 倍，行情异常，区间参考性差")
     return {"区间": [center - med / 2, center + med / 2], "中心": center, "振幅中位": med, "振幅最大": float(amp.max()),
-            "天数": len(g), "交易日": f"{g.index[-1]:%Y-%m-%d}", "取到": f"{df.t.iloc[-1]:%m-%d %H:%M}", "备注": "；".join(notes)}
+            "天数": len(g), "交易日": f"{latest['d']:%Y-%m-%d}", "振幅截至": f"{g.index[-1]:%Y-%m-%d}",
+            "取到": f"{latest['t']:%m-%d %H:%M}", "备注": "；".join(notes)}
 
 
 def main():

@@ -68,6 +68,7 @@ BOLD_FILE = FONT_FILE.with_name("msyhbd.ttc")  # 微软雅黑粗体（重仓标�
 DEFAULTS = {"网格左": 19, "网格上": 47, "网格右": 0, "网格下": 20, "标签上": 20, "标签右": 8, "字号": 10,
             "提示左": 560, "提示上": 2, "提示字号": 13}
 ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到哪用；跟标签字号无关
+SECOND = (120, 200, 255)  # 标签第二行（首笔区间）浅蓝
 GREY = (170, 170, 170)  # 盘口框里的「竞」
 VOL = (235, 200, 80)  # 盘口框：竞价成交手数黄
 TAG_COLORS = {"重": (150, 70, 225), "快": (235, 70, 70), "少": VOL}  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框
@@ -78,7 +79,7 @@ LIFE = 600  # 最多开 10 分钟（竞价判断.py 出意外没写结果时，�
 QUIET = (3, 5)  # 开盘前 3 秒到开盘后 5 秒不截屏比对格子（标签照样显示），不跟开盘那一下抢电脑
 SAMPLES = [("真", "首笔 -9.0 ~ -7.6"), ("半真", "首笔 -21 ~ -9"), ("假", "首笔 -8.9 ~ -7.3"),
            ("没针", "首笔 -11 ~ -9"), ("不判断", "竞价没成交")]
-TAG_SAMPLES = {"sc": ("首笔 -1.44 (-4.0 ~ -0.8)", (("重2.9", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
+TAG_SAMPLES = {"sc": ("首笔 -1.44  首笔半 -0.82\n首笔区间 (-4.0 ~ -0.8)", (("重2.9", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
                "nr": ("首笔 -40 ~ -15", (("重2.3", "重"), ("量少", "少")))}
 
 # 用自己的一份 user32，设参数类型不影响同一进程里别的代码
@@ -295,6 +296,9 @@ def tag_width(d, t: str, size: float) -> float:
 
 
 def badge_width(d, text: str, size: float, tags=()) -> float:
+    if "\n" in text:  # 两行的标签（第二行是首笔区间）：取两行里宽的那行
+        a, b = text.split("\n", 1)
+        return max(badge_width(d, a, size, tags), badge_width(d, b, size))
     pad = size * .45
     return pad + size + pad * .8 + sum(tag_width(d, t, size) for t, _ in tags) + d.textlength(text, font=font(size)) + pad
 
@@ -305,7 +309,8 @@ def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(
     f = font(size)
     pad, s, h = size * .45, size * 1.0, size * 1.5
     x0 = right - badge_width(d, text, size, tags)
-    d.rounded_rectangle([x0, top, right, top + h], radius=size * .3, fill=BG, outline=COLORS[kind],
+    text, second = (text.split("\n", 1) + [""])[:2]  # 有第二行（首笔区间）就写在第一行字下面，框跟着变高
+    d.rounded_rectangle([x0, top, right, top + h * (2 if second else 1)], radius=size * .3, fill=BG, outline=COLORS[kind],
                         width=max(1, round(size / 14)))
     symbol(d, kind, x0 + pad, top + (h - s) / 2, s)
     x = x0 + pad + s + pad * .8
@@ -319,6 +324,8 @@ def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(
         d.text((x + tw / 2, top + h / 2), t, font=bold(size), fill=(255, 255, 255) if style == "重" else c, anchor="mm")
         x += tw + size * .3
     d.text((x, top + h / 2), text, font=f, fill=MUTED if kind in ("没针", "不判断") else FG, anchor="lm")
+    if second:
+        d.text((x0 + pad + s + pad * .8, top + h * 1.5), second, font=f, fill=SECOND, anchor="lm")
 
 
 def book_cols(d, book, size: float) -> tuple[list, list]:
