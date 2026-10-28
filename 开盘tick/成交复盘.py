@@ -22,7 +22,14 @@
     价差在往上走还空开（往下走还多开）提示「逆着走」——这种时候「偏高」可能只是新的正常。
   价差在往下走时空开（往上走时多开）标「顺着走」：赌它接着走，看的是趋势，位置偏中间也说得通。
   只是拿近几天的统计对照，不是买卖建议。
-四、盈亏：一律用原文件的「平仓盈亏(逐笔)」（按实际开仓价算，小草说这才是真正的盈亏，盯市的有时不准），净盈亏 = 逐笔 − 手续费。
+四、盈亏：按价差算，(平仓价差 − 开仓价差) × 手数 × 乘数，多开为正、空开反过来，净盈亏 = 价差盈亏 − 手续费。
+  不用逐笔：交易所按单个合约记账，程序先平昨仓时，一条腿会平到别的组合的老仓（10-28 B 号 au2612 平到和 au2708 配的那手），
+  逐笔就把老仓攒的盈亏算进了这一组。逐笔放在旁边当参考，和价差差得多会标出来。
+五、价差账本：每个号从最早的配对结果往后滚，每天没平的组合记下来带到第二天；第二天「期初仓位平仓」先开先平地对上账本，
+  就知道开在多少。账本里最早那天以前开的仓不知道开仓价，显示空的。每天收盘后的账本存成 配对明细/日期_账号X_账本.json。
+  没平的组合按结算价（天勤取；拿不到结算价的那天用收盘价）算浮动盈亏。
+  今天大约赚亏 = 今天平掉的 + 手上持仓，从昨天结算（今天开的从开仓价差）到今天结算的价差变化 × 乘数，再减今天全部手续费；
+  应该和快期的「平仓盈亏 + 持仓盈亏 − 手续费」（盯市）差不多。
 """
 import argparse
 import importlib.util
@@ -57,6 +64,11 @@ RECENT_DAYS, EARLIER_DAYS = 5, 15  # 合理价差看最近 5 个交易日；趋�
 AFTER_MIN = 30  # 开仓后看多少分钟
 MIN_MINUTES = 100  # 最近 5 天两腿都有成交的分钟少于这个数，提示数据少
 EXCHANGE = {"sc": "INE", "nr": "INE", "lu": "INE", "bc": "INE", "ec": "INE"}  # 其余默认上期所
+# 合约乘数（每手多少吨 / 千克 / 桶），10-28 小草认可的；没写的品种价差盈亏留空
+MULT = {"au": 1000, "ag": 15, "cu": 5, "bc": 5, "al": 5, "zn": 5, "pb": 5, "ni": 1, "sn": 1, "ao": 20,
+        "rb": 10, "hc": 10, "ss": 5, "wr": 10, "ru": 10, "nr": 10, "br": 5, "bu": 10, "fu": 10, "lu": 10,
+        "sc": 1000, "sp": 10}
+EPS = 1e-9
 
 
 # ---------- 读文件 ----------
@@ -187,19 +199,97 @@ def pair(day: str, acct: str, skill, leg2: dict) -> dict:
     return res
 
 
+# ---------- 价差账本 ----------
+
+def mult(combo: str):
+    """组合的乘数；跨品种两腿乘数不一样时没法按价差算，返回 None。"""
+    m = {MULT.get(prod(c)) for c in combo.split("-")}
+    return m.pop() if len(m) == 1 else None
+
+
+def sign(direction: str) -> int:
+    """多开（多平）价差往上赚钱，空开（空平）往下赚钱。"""
+    return 1 if direction.startswith("多") else -1
+
+
+def roll(book: list[dict], res: dict, day: str) -> tuple[list[dict], list[dict]]:
+    """拿一天的配对结果滚账本：期初仓位平仓按先开先平平掉账本里同组合、同方向的仓，当天没平的记进去。
+    返回 (收盘后的账本, 今天平掉的以前的仓)。对不上账本的（账本最早那天以前开的）开仓价差是 None。"""
+    book = [dict(b) for b in book]
+    closed = []
+    for x in res["期初仓位平仓"]:
+        want = "空开" if x["平仓方向"] == "空平" else "多开"
+        total = left = float(x["手数"])
+        base = dict(组合=x["组合"], 方向=want, 平仓时间=x["平仓时间"], 平仓价差=x["平仓点位"])
+        share = lambda q: dict(手续费=(num(x["平仓手续费"]) or 0) * q / total,
+                               逐笔=None if num(x.get("成交回报盈亏")) is None else num(x["成交回报盈亏"]) * q / total)
+        for b in book:
+            if left <= EPS:
+                break
+            if b["组合"] == x["组合"] and b["方向"] == want and b["手数"] > EPS:
+                q = min(left, b["手数"])
+                b["手数"] -= q
+                left -= q
+                closed.append(base | share(q) | dict(手数=q, 开仓日=b["开仓日"], 开仓时间=b["开仓时间"], 开仓价差=b["开仓价差"]))
+        if left > EPS:
+            closed.append(base | share(left) | dict(手数=left, 开仓日=None, 开仓时间="", 开仓价差=None))
+    book = [b for b in book if b["手数"] > EPS]
+    book += [dict(组合=x["组合"], 方向=x["方向"], 手数=float(x["未平手数"]), 开仓日=day, 开仓时间=x["开仓时间"],
+                  开仓价差=x["开仓点位"]) for x in res["未平仓组合"]]
+    return book, closed
+
+
+def book_before(day: str, acct: str) -> tuple[list[dict], str | None]:
+    """day 之前所有配对结果滚出来的账本（day 开盘前手上的价差组合），和账本从哪天开始记。
+    用存下来的配对.json（当时用的腿2），不重新配对。"""
+    book, first = [], None
+    for f in sorted(PAIRS.glob(f"*_账号{acct}_配对.json")):
+        d = f.name[:10]
+        if d >= day:
+            break
+        first = first or d
+        book, _ = roll(book, json.loads(f.read_text(encoding="utf-8")), d)
+    return book, first
+
+
 # ---------- 分钟线 ----------
 
 def symbol(c: str) -> str:
     return f"{EXCHANGE.get(re.match(r'[a-z]+', c)[0], 'SHFE')}.{c}"
 
 
-def fetch_klines(contracts: set) -> dict:
+def fetch_market(minute: set, daily: set, day: str) -> tuple[dict, dict, str | None]:
+    """分钟线（盘中开仓判断用）和每个合约逐日的价（算持仓浮动用）：{合约: {交易日: 价}}，还有 day 的前一个交易日。
+    天勤报价里有这一天、前一天的结算价就用结算价（和快期盯市一样），更早的用日线收盘价。"""
     import 开盘tick as tk  # 天勤账号、连接、分钟线都用开盘tick.py 里的
     api = tk.connect()
     try:
-        return {c: tk.minute_klines(api, symbol(c)) for c in sorted(contracts)}
+        k = {c: tk.minute_klines(api, symbol(c)) for c in sorted(minute)}
+        marks, prev = {}, None
+        for c in sorted(daily):
+            d = api.get_kline_serial(symbol(c), 86400, data_length=60)
+            d = d[d["datetime"] > 0].dropna(subset=["close"])
+            days = [f"{t:%Y-%m-%d}" for t in pd.to_datetime(d["datetime"].astype("int64"), utc=True).dt.tz_convert("Asia/Shanghai")]
+            m = dict(zip(days, d["close"].astype(float)))
+            q = api.get_quote(symbol(c))
+            if days:
+                if num(q.settlement) is not None and days[-1] == day:
+                    m[day] = float(q.settlement)
+                if num(q.pre_settlement) is not None and len(days) >= 2:
+                    m[days[-2]] = float(q.pre_settlement)
+            before = [x for x in days if x < day]
+            prev = max(prev or "", before[-1]) if before else prev
+            marks[c] = m
+        return k, marks, prev
     finally:
         api.close()
+
+
+def spread_at(combo: str, marks: dict, d: str | None):
+    if d is None:
+        return None
+    p = [marks.get(c, {}).get(d) for c in combo.split("-")]
+    return None if None in p else round(p[0] - p[1], 6)
 
 
 def spread_minutes(k1: pd.DataFrame, k2: pd.DataFrame) -> pd.DataFrame:
@@ -227,8 +317,14 @@ def pct_rank(x: pd.Series, v: float) -> float:
 
 # ---------- 判断 ----------
 
+def spread_pnl(combo: str, points):
+    """价差盈亏（元）= 带方向的价差点数 × 手数（配对脚本的「今日开平点数」，或自己算的）× 乘数。"""
+    m, p = mult(combo), num(points)
+    return None if m is None or p is None else round(p * m, 2)
+
+
 def net(pnl, fee):
-    """净盈亏 = 逐笔平仓盈亏 − 手续费。逐笔才是真正的盈亏（小草说的），盯市的平仓盈亏有时不准。"""
+    """净盈亏 = 价差盈亏 − 手续费。"""
     p, f = num(pnl), num(fee)
     return None if p is None or f is None else round(p - f, 2)
 
@@ -237,7 +333,7 @@ def opens(res: dict, day: str, acct: str) -> list[dict]:
     out = []
     for x in res["交易明细"]:
         out.append(dict(号=acct, 组合=x["组合"], 方向=x["开仓方向"], 手数=x["手数"], 开仓时间=x["开仓时间"],
-                        开仓价差=x["开仓点位"], 平仓时间=x["平仓时间"], 平仓价差=x["平仓点位"], 净盈亏=net(x.get("成交回报盈亏"), x["手续费"]),
+                        开仓价差=x["开仓点位"], 平仓时间=x["平仓时间"], 平仓价差=x["平仓点位"], 净盈亏=net(spread_pnl(x["组合"], x.get("今日开平点数")), x["手续费"]),
                         状态="已平"))
     for x in res["未平仓组合"]:
         out.append(dict(号=acct, 组合=x["组合"], 方向=x["方向"], 手数=x["未平手数"], 开仓时间=x["开仓时间"],
@@ -333,35 +429,75 @@ def intraday_section(rows: list[dict]) -> str:
                   "当天开仓前", f"开仓后 {AFTER_MIN} 分钟", "平仓", "净盈亏（元）", "备注"], out)
 
 
-def summary_section(results: dict, day: str) -> str:
-    """每个组合：配上对的平仓 + 平掉今天以前开的仓，逐笔盈亏、手续费、净盈亏；每个号再按原文件整列加总对一遍。"""
-    rows, notes = [], []
-    for acct, res in results.items():
-        g = {}
-        for x in res["交易明细"]:
-            s = g.setdefault(x["组合"], [0.0, 0.0, 0.0])
-            s[0] += x["手数"]; s[1] += num(x.get("成交回报盈亏")) or 0; s[2] += num(x["手续费"]) or 0
-        for x in res["期初仓位平仓"]:
-            s = g.setdefault(x["组合"], [0.0, 0.0, 0.0])
-            s[0] += x["手数"]; s[1] += num(x.get("成交回报盈亏")) or 0; s[2] += num(x["平仓手续费"]) or 0
-        for k in sorted(g):
-            q, p, f = g[k]
-            rows.append([acct, k, fmt(q, 0), money(p), fmt(f), money(p - f)])
-        raw = pd.read_csv(PAIRS / f"{day}_账号{acct}_整理.csv", encoding="utf-8-sig", dtype=str)
-        tot = lambda c: pd.to_numeric(raw[c].str.replace(",", ""), errors="coerce").sum()
-        p, f = tot("平仓盈亏(逐笔)"), tot("手续费")
-        rows.append([Raw(f"<b>{acct} 全天</b>"), "整个文件", "", money(p), fmt(f), Raw(f"<b>{money(p - f)}</b>")])
-        if res["期初仓位平仓"]:
-            notes.append(f"账号{acct}：" + "、".join(f"{x['组合']} {x['平仓方向']} {fmt(x['手数'], 0)} 手" for x in res["期初仓位平仓"])
-                         + " 平的是今天以前开的仓，逐笔盈亏照算，手续费只有平仓那一半。")
-        if res["异常"]:
-            notes.append(f"⚠ 账号{acct}：{len(res['异常'])} 条没配上，见 成交/配对明细/ 里的配对.md。")
-    notes.append("全天 = 原文件「平仓盈亏(逐笔)」整列加总 − 手续费整列加总，今天有没平的仓时，手续费里多了它们开仓那一半，全天会比各组合加起来少一些。")
-    return (table(["号", "组合", "平掉的手数", "逐笔盈亏", "手续费", "净盈亏（元）"], rows)
+def add(a, b):
+    """两个数相加，有一个不知道就是不知道。"""
+    return None if a is None or b is None else a + b
+
+
+def account_day(acct: str, res: dict, bk: dict, marks: dict, day: str, prev: str | None) -> dict:
+    """一个号今天的账：各组合平掉的价差盈亏、收盘后的持仓和浮动、今天大约赚亏。"""
+    g, today, notes = {}, 0.0, []
+    for x in res["交易明细"]:  # 今天开、今天平
+        s = g.setdefault(x["组合"], dict(手数=0.0, 价差=0.0, 费=0.0, 逐笔=0.0))
+        p = spread_pnl(x["组合"], x.get("今日开平点数"))
+        s["手数"] += x["手数"]; s["价差"] = add(s["价差"], p); s["费"] += num(x["手续费"]) or 0
+        s["逐笔"] = add(s["逐笔"], num(x.get("成交回报盈亏")))
+        today = add(today, p)
+    for x in bk["closed"]:  # 以前开、今天平
+        s = g.setdefault(x["组合"], dict(手数=0.0, 价差=0.0, 费=0.0, 逐笔=0.0))
+        sg, q = sign(x["方向"]), x["手数"]
+        o = num(x["开仓价差"])
+        p = None if o is None else spread_pnl(x["组合"], (x["平仓价差"] - o) * sg * q)
+        y = spread_at(x["组合"], marks, prev)
+        s["手数"] += q; s["价差"] = add(s["价差"], p); s["费"] += x["手续费"]; s["逐笔"] = add(s["逐笔"], x["逐笔"])
+        today = add(today, None if y is None else spread_pnl(x["组合"], (x["平仓价差"] - y) * sg * q))
+        if o is None:
+            notes.append(f"账号{acct}：{x['组合']} {x['方向']} {fmt(q, 0)} 手是账本开始（{bk['first'] or day}）以前开的，不知道开在多少，价差盈亏空着。")
+    combos = [[acct, k, fmt(s["手数"], 0), money(s["价差"]), fmt(s["费"]), money(add(s["价差"], -s["费"])),
+               money(s["逐笔"]),
+               "差得多：有腿平到了别的组合的仓（多半是先平昨仓），以价差为准"
+               if s["价差"] is not None and s["逐笔"] is not None and abs(s["价差"] - s["逐笔"]) > 100 else ""]
+              for k, s in sorted(g.items())]
+    hold, float_sum = [], 0.0
+    for b in bk["after"]:
+        sg, q, o = sign(b["方向"]), b["手数"], num(b["开仓价差"])
+        t = spread_at(b["组合"], marks, day)
+        ref = o if b["开仓日"] == day else spread_at(b["组合"], marks, prev)
+        fl = None if t is None or o is None else spread_pnl(b["组合"], (t - o) * sg * q)
+        float_sum = add(float_sum, fl)
+        today = add(today, None if t is None or ref is None else spread_pnl(b["组合"], (t - ref) * sg * q))
+        hold.append([acct, b["组合"], b["方向"], fmt(q, 0), b["开仓日"] or "", Raw(f"<b>{fmt(o, 4)}</b>"), fmt(t, 4), money(fl)])
+    raw = pd.read_csv(PAIRS / f"{day}_账号{acct}_整理.csv", encoding="utf-8-sig", dtype=str)
+    tot = lambda c: pd.to_numeric(raw[c].str.replace(",", ""), errors="coerce").sum()
+    fee = float(tot("手续费"))
+    return dict(combos=combos, hold=hold, float=float_sum, today=add(today, -fee), fee=fee,
+                per_trade=float(tot("平仓盈亏(逐笔)")) - fee, notes=notes)
+
+
+def summary_section(results: dict, books: dict, marks: dict, day: str, prev: str | None) -> str:
+    """盈亏汇总（按价差）、收盘后的持仓（价差账本）、每个号今天大约赚亏。"""
+    accs = {a: account_day(a, res, books[a], marks, day, prev) for a, res in results.items()}
+    combos = [r for a in accs.values() for r in a["combos"]]
+    hold = [r for a in accs.values() for r in a["hold"]]
+    days = [[Raw(f"<b>{a}</b>"), Raw(f"<b>{money(x['today'])}</b>"), money(x["float"]), fmt(x["fee"]), money(x["per_trade"])]
+            for a, x in accs.items()]
+    notes = [n for a in accs.values() for n in a["notes"]]
+    notes += [f"⚠ 账号{a}：{len(res['异常'])} 条没配上，见 成交/配对明细/ 里的配对.md。" for a, res in results.items() if res["异常"]]
+    return ("<h3>今天大约赚亏</h3>"
+            + table(["号", "今天大约赚亏（元）", "手上持仓的浮动盈亏（从开仓算）", "今天手续费", "参考：逐笔整列 − 手续费"], days)
+            + f"<p class='note'>今天大约赚亏 = 今天平掉的和手上拿着的价差组合，从昨天（{prev or '无'}）结算价差到今天结算价差（今天开的从开仓价差算起）的变化 × 乘数，"
+            "再减今天全部手续费。应该和快期「平仓盈亏 + 持仓盈亏 − 手续费」（盯市）差不多；天勤没拿到结算价的那天用收盘价，会差一点。"
+            "逐笔整列只当参考：先平昨仓时，一条腿会平到别的组合的老仓，逐笔会把老仓以前攒的盈亏一次算进今天。</p>"
+            + "<h3>平掉的组合（按价差算）</h3>"
+            + table(["号", "组合", "平掉的手数", "价差盈亏", "手续费", "净盈亏（元）", "参考：逐笔", "备注"], combos)
+            + "<p class='note'>价差盈亏 = (平仓价差 − 开仓价差) × 手数 × 乘数，空开反过来。以前开、今天平的仓，开仓价差从价差账本里找；"
+            "手续费是今天交的（以前开的仓，开仓那一半手续费已经算在开仓那天）。</p>"
+            + "<h3>收盘后手上的价差组合（价差账本）</h3>"
+            + (table(["号", "组合", "方向", "手", "开仓日", "开在", "今天结算价差", "浮动盈亏（从开仓算）"], hold) if hold else "<p>都平了。</p>")
             + "".join(f"<p class='note'>{esc(n)}</p>" for n in notes))
 
 
-def write_page(day: str, results: dict, all_opens: list[dict]) -> Path:
+def write_page(day: str, results: dict, all_opens: list[dict], books: dict, marks: dict, prev: str | None) -> Path:
     op = [o for o in all_opens if o["开盘"]]
     intra = [o for o in all_opens if not o["开盘"]]
     body = [f"<h1>成交复盘 {day}</h1><p class='meta'>交易日 {day}（{night_date(day)} 晚上夜盘到 {day} 15:00），"
@@ -376,9 +512,9 @@ def write_page(day: str, results: dict, all_opens: list[dict]) -> Path:
             "趋势：最近 5 天中位比之前挪动超过常见区间宽度的一半；逆着走时「偏高 / 偏低」可能只是新的正常。"
             "顺着走：价差在往下走时空开（往上走时多开），赌它接着走，这时看的是趋势，位置偏中间也说得通。"
             "当天开仓前、开仓后也是中间八成。只是统计对照，不是买卖建议。</p>",
-            "<h2>盈亏汇总</h2>", summary_section(results, day),
-            "<p class='note'>盈亏一律用原文件的「平仓盈亏(逐笔)」（按实际开仓价算的，小草说这才是真正的盈亏；盯市的「平仓盈亏」有时不准），"
-            "净盈亏 = 逐笔 − 手续费。按先开先平配对（trade-data-analysis 的配对脚本）。手续费用文件里记的；"
+            "<h2>盈亏汇总</h2>", summary_section(results, books, marks, day, prev),
+            "<p class='note'>盈亏按价差算（上面「净盈亏」也是）：交易所按单个合约记账，不知道哪两条腿是一组，逐笔、盯市单看都可能把别的组合的盈亏算进来。"
+            "乘数：" + "、".join(f"{k} {v}" for k, v in MULT.items()) + "。按先开先平配对（trade-data-analysis 的配对脚本）。手续费用文件里记的；"
             + ("先后按成交编号（编号小的先成交）。</p>"
                if all("成交编号" in r["数据概况"]["成交顺序"] for r in results.values())
                else "有的导出没有成交编号，同一秒的先后按文件顺序。</p>")]
@@ -404,9 +540,16 @@ def main():
     leg2.update(dict(x.split("=", 1) for x in a.leg2.replace("，", ",").split(",") if "=" in x))
     results = {acct: pair(day, acct, skill, leg2) for acct in accts}
     all_opens = [o for acct, res in results.items() for o in opens(res, day, acct)]
+    books = {}
+    for acct, res in results.items():
+        before, first = book_before(day, acct)
+        after, closed = roll(before, res, day)
+        books[acct] = dict(before=before, after=after, closed=closed, first=first or day)
+        (PAIRS / f"{day}_账号{acct}_账本.json").write_text(json.dumps(after, ensure_ascii=False, indent=1), encoding="utf-8")
     need = {c for o in all_opens if not o["开盘"] for c in o["组合"].split("-")}
+    held = {c for b in books.values() for x in b["before"] + b["after"] + b["closed"] for c in x["组合"].split("-")}
+    k, marks, prev = fetch_market(need, held, day)
     if need:
-        k = fetch_klines(need)
         cache = {}
         for o in all_opens:
             if not o["开盘"]:
@@ -414,7 +557,7 @@ def main():
                 if o["组合"] not in cache:
                     cache[o["组合"]] = spread_minutes(k[a1], k[a2])
                 o["判断结果"] = judge(o, cache[o["组合"]], day)
-    f = write_page(day, results, all_opens)
+    f = write_page(day, results, all_opens, books, marks, prev)
     for acct, res in results.items():
         print(f"账号{acct}：配对 {len(res['交易明细'])} 笔、没平 {len(res['未平仓组合'])} 笔、没配上 {len(res['异常'])} 条")
     print(f"网页：{f}")
