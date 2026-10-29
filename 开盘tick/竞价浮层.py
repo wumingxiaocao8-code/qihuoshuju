@@ -11,8 +11,9 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
   ○ 没针  ？ 不判断
 标签左边并排一个小框，两行写两条腿的竞价成交手数：「sc2701 竞 15」= sc2701 竞价成交 15 手（黄）
 （10-24 晚去掉了卖一、买一的挂单手数：两年回放看过，对判断没用）。
-大机会（竞价后立刻能成交那边偏出门槛 2 倍以上）时，sc、nr 跨月格子的符号后面多一个紫块「重3.6」（几倍门槛），
+大机会（竞价后立刻能成交那边偏出门槛 2 倍以上）时，sc、nr、fu、bu 跨月格子的符号后面多一个紫块「重3.6」（几倍门槛），
 再按情况加红框「腿2秒进」（主力竞价比腿1 动得少，腿2 晚两秒才进多半亏）、黄框「量少」（冷门腿竞价不到持仓 0.7‰）。
+浮层上一律写短（「首」「半」「腿2」），不写组合名；这几个块一律放第二行首笔区间前面，盘口框放在公式那一行下面（10-29 晚定：每格按品种名四个字、价差四位的最坏情况排，样子统一，见看板.txt 的「公式宽」）。
 菜单栏空白处还有一个小提示：等竞价时写「竞价判断：等 20:59」，出错变红字。
 紧急关掉（程序出错、挡住要看的东西时）：按 Ctrl + Alt + Q，标签马上全部消失（博易云在不在前面都行）；
 或者点菜单栏小提示右边的 ×（点它不抢博易云的焦点），或者双击桌面上的「关竞价浮层」（关浮层.pyw）。关掉以后这次开盘不会再出来，竞价判断的网页和 csv 照样写。
@@ -66,7 +67,7 @@ BOLD_FILE = FONT_FILE.with_name("msyhbd.ttc")  # 微软雅黑粗体（重仓标�
 # 位置的默认值（按博易云自己的像素，从窗口里面的左上角算）；看板.txt 里写了就用那边的。
 # 博易云不认屏幕缩放（DPI 96），Windows 把它整个放大（这台电脑缩放 150%，放大 1.5 倍），贴到屏幕上时乘这个倍数（dpi_ratio）
 DEFAULTS = {"网格左": 19, "网格上": 47, "网格右": 0, "网格下": 20, "标签上": 20, "标签右": 8, "字号": 10,
-            "提示左": 560, "提示上": 2, "提示字号": 13}
+            "公式宽": 410, "提示左": 560, "提示上": 2, "提示字号": 13}
 ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到哪用；跟标签字号无关
 SECOND = (120, 200, 255)  # 标签第二行（首笔区间）浅蓝
 GREY = (170, 170, 170)  # 盘口框里的「竞」
@@ -295,37 +296,77 @@ def tag_width(d, t: str, size: float) -> float:
     return d.textlength(t, font=bold(size)) + size * 1.0
 
 
-def badge_width(d, text: str, size: float, tags=()) -> float:
+def badge_width(d, text: str, size: float, tags=(), down: bool = False) -> float:
+    """标签整个有多宽。down = 重仓标记挪到第二行（首笔区间后面）。"""
     if "\n" in text:  # 两行的标签（第二行是首笔区间）：取两行里宽的那行
         a, b = text.split("\n", 1)
-        return max(badge_width(d, a, size, tags), badge_width(d, b, size))
+        return max(badge_width(d, a, size, () if down else tags), badge_width(d, b, size, tags if down else ()))
     pad = size * .45
     return pad + size + pad * .8 + sum(tag_width(d, t, size) for t, _ in tags) + d.textlength(text, font=font(size)) + pad
 
 
-def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=()) -> None:
-    """一个标签，右上角对着 (right, top)；size = 字号（像素）。
-    tags = 重仓标记 ((字, 样式), …)，画在符号后面：样式「重」紫底白字，「快」红框红字，「少」黄框黄字。"""
-    f = font(size)
-    pad, s, h = size * .45, size * 1.0, size * 1.5
-    x0 = right - badge_width(d, text, size, tags)
-    text, second = (text.split("\n", 1) + [""])[:2]  # 有第二行（首笔区间）就写在第一行字下面，框跟着变高
-    d.rounded_rectangle([x0, top, right, top + h * (2 if second else 1)], radius=size * .3, fill=BG, outline=COLORS[kind],
-                        width=max(1, round(size / 14)))
-    symbol(d, kind, x0 + pad, top + (h - s) / 2, s)
-    x = x0 + pad + s + pad * .8
+def row1_width(d, text: str, size: float, tags=(), down: bool = False) -> float:
+    """标签在公式那一行占多宽（会不会盖住价差数看这个）。重仓标记没挪下去时整个框一样宽；挪下去了只算第一行。"""
+    if down and "\n" in text:
+        return badge_width(d, text.split("\n", 1)[0], size)
+    return badge_width(d, text, size, tags)
+
+
+def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
+    """从 x 开始画重仓标记，竖着居中在 mid；返回画完以后的 x。"""
     for t, style in tags:
         tw, c = tag_width(d, t, size) - size * .3, TAG_COLORS.get(style, MUTED)
-        box = [x, top + h * .12, x + tw, top + h * .88]
+        box = [x, mid - h * .38, x + tw, mid + h * .38]
         if style == "重":
             d.rounded_rectangle(box, radius=size * .25, fill=c)
         else:
             d.rounded_rectangle(box, radius=size * .25, outline=c, width=max(1, round(size / 9)))
-        d.text((x + tw / 2, top + h / 2), t, font=bold(size), fill=(255, 255, 255) if style == "重" else c, anchor="mm")
+        d.text((x + tw / 2, mid), t, font=bold(size), fill=(255, 255, 255) if style == "重" else c, anchor="mm")
         x += tw + size * .3
+    return x
+
+
+SHORT_TAGS = {"腿2秒进": "腿2"}  # 浮层上写短名（10-29 晚他定的），网页和 csv 还是全称
+
+
+def short(text: str) -> str:
+    """浮层标签第一行写短：「首笔 423.2  首笔半 442.1」→「首423.2 半442.1」；第二行「首笔区间」不动。"""
+    first, *rest = text.split("\n", 1)
+    first = first.replace("首笔半 ", "半").replace("首笔 ", "首").replace("  ", " ")
+    return "\n".join([first] + rest)
+
+
+def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(), down: bool = False) -> None:
+    """一个标签，右上角对着 (right, top)；size = 字号（像素）。
+    tags = 重仓标记 ((字, 样式), …)，画在符号后面：样式「重」紫底白字，「快」红框红字，「少」黄框黄字。
+    down = 重仓标记挪到第二行首笔区间后面（第一行放不下、会盖住公式后面的价差数时）：
+    框成台阶形，第一行窄、第二行宽，第二行在公式那一行下面。"""
+    f = font(size)
+    pad, s, h = size * .45, size * 1.0, size * 1.5
+    full, (text, second) = text, (text.split("\n", 1) + [""])[:2]  # 有第二行（首笔区间）就写在第一行字下面，框跟着变高
+    down = down and bool(tags)
+    x0 = right - badge_width(d, full, size, tags, down)
+    lw = max(1, round(size / 14))
+    if down:
+        a = right - badge_width(d, text, size)  # 第一行的左边
+        b = right - badge_width(d, second, size, tags)  # 第二行的左边
+        r = size * .3
+        d.rounded_rectangle([a, top, right, top + h + r], radius=r, fill=BG)
+        d.rounded_rectangle([b, top + h, right, top + h * 2], radius=r, fill=BG)
+        pts = [(a, top + h), (a, top), (right, top), (right, top + h * 2), (b, top + h * 2), (b, top + h), (a, top + h)]
+        d.line(pts, fill=COLORS[kind], width=lw, joint="curve")
+        x1 = a + pad
+    else:
+        d.rounded_rectangle([x0, top, right, top + h * (2 if second else 1)], radius=size * .3, fill=BG,
+                            outline=COLORS[kind], width=lw)
+        x1 = x0 + pad
+    symbol(d, kind, x1, top + (h - s) / 2, s)
+    x = draw_tags(d, () if down else tags, x1 + s + pad * .8, top + h / 2, h, size)
     d.text((x, top + h / 2), text, font=f, fill=MUTED if kind in ("没针", "不判断") else FG, anchor="lm")
-    if second:
-        d.text((x0 + pad + s + pad * .8, top + h * 1.5), second, font=f, fill=SECOND, anchor="lm")
+    if second or down:
+        x = (b + pad + s + pad * .8) if down else (x0 + pad + s + pad * .8)
+        x = draw_tags(d, tags if down else (), x, top + h * 1.5, h, size)
+        d.text((x, top + h * 1.5), second, font=f, fill=SECOND, anchor="lm")
 
 
 def book_cols(d, book, size: float) -> tuple[list, list]:
@@ -409,18 +450,24 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
             kind, text, book, *more = items[key]
             tags = more[0] if more else ()
             right, top = x1 - o["标签右"], y0 + o["标签上"]
-            extra = book_width(d, book, size) + size * .6 if book else 0  # 盘口框在标签左边（比标签高，放左边少挡针）
-            if ends and (i, j) in ends and "  " in text:
-                if right - badge_width(d, text, size, tags) - extra < x0 + ends[(i, j)] + GAP * o["倍数"]:
-                    text = text.split("  ", 1)[1]
-            badge(d, kind, text, right, top, size, tags)
-            left = right - badge_width(d, text, size, tags)
-            lefts[(i, j)] = left
+            # 10-29 晚他定的：每格都按最坏情况排（品种名四个字，如「合成橡胶2701-合成橡胶2612」，价差四位，如 -999），
+            # 不按每格实际的字量，免得每格样子不一样：公式那一行写到离格子左边「公式宽」（看板.txt，博易云的像素）。
+            # 所以第一行只写「▲ 首-217.0 半-203.5」（不写组合名），重仓标记一律放第二行，盘口框一律放在公式那一行下面；
+            # 第一行还放不下（数字特别长）就把「半…」挪到第二行开头。
+            text = short(re.sub(r"^\S+-\S+  ", "", text))
+            tags = tuple((SHORT_TAGS.get(t, t), st) for t, st in tags)
+            first, *rest = text.split("\n", 1)
+            if " 半" in first and right - badge_width(d, first, size) < x0 + o["公式宽"]:
+                first, half = first.split(" 半", 1)
+                text = "\n".join([first, "半" + half + ("  " + rest[0] if rest else "")])
+            down = bool(tags)
+            if down and "\n" not in text:
+                text += "\n"
+            badge(d, kind, text, right, top, size, tags, down)
+            left = right - badge_width(d, text, size, tags, down)
+            lefts[(i, j)] = right - row1_width(d, text, size, tags, down)
             if book:
-                down = bool(ends and (i, j) in ends and left - extra < x0 + ends[(i, j)] + GAP * o["倍数"])
-                book_box(d, book, left - size * .6, top + (ROW_H * o["倍数"] if down else 0), size)
-                if not down:
-                    lefts[(i, j)] = left - extra
+                book_box(d, book, left - size * .6, top + ROW_H * o["倍数"], size)
     if note and note.get("文字"):
         box = chip(d, note["文字"], rect[0] + o["提示左"], rect[1] + o["提示上"], o["提示字号"], note.get("红", False))
         if info is not None:
