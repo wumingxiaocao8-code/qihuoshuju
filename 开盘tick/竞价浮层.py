@@ -72,7 +72,8 @@ ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到
 SECOND = (120, 200, 255)  # 标签第二行（首笔区间）浅蓝
 GREY = (170, 170, 170)  # 盘口框里的「竞」
 VOL = (235, 200, 80)  # 盘口框：竞价成交手数黄
-TAG_COLORS = {"重": (150, 70, 225), "快": (235, 70, 70), "少": VOL}  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框
+TAG_COLORS = {"重": (150, 70, 225), "快": (235, 70, 70), "少": VOL, "薄": (235, 120, 20)}  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框；薄大 橙底白字（10-30，顶替重）
+FILLED = ("重", "薄")  # 实心底、白字的样式
 HEAD_W, HEAD_H = 0.27, 15  # 比对用的标题条：格子宽度的前 27%、格子最上面 15 像素（合约名那一行；再宽会带进右边时间的第一个字）
 MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就算这格换了
 GAP = 8  # 标签左边离公式那行字至少空 8 像素；放不下全名就去掉组合名，不盖住公式后面的价差数
@@ -317,11 +318,11 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
     for t, style in tags:
         tw, c = tag_width(d, t, size) - size * .3, TAG_COLORS.get(style, MUTED)
         box = [x, mid - h * .38, x + tw, mid + h * .38]
-        if style == "重":
+        if style in FILLED:
             d.rounded_rectangle(box, radius=size * .25, fill=c)
         else:
             d.rounded_rectangle(box, radius=size * .25, outline=c, width=max(1, round(size / 9)))
-        d.text((x + tw / 2, mid), t, font=bold(size), fill=(255, 255, 255) if style == "重" else c, anchor="mm")
+        d.text((x + tw / 2, mid), t, font=bold(size), fill=(255, 255, 255) if style in FILLED else c, anchor="mm")
         x += tw + size * .3
     return x
 
@@ -338,7 +339,7 @@ def short(text: str) -> str:
 
 def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(), down: bool = False) -> None:
     """一个标签，右上角对着 (right, top)；size = 字号（像素）。
-    tags = 重仓标记 ((字, 样式), …)，画在符号后面：样式「重」紫底白字，「快」红框红字，「少」黄框黄字。
+    tags = 重仓标记 ((字, 样式), …)，画在符号后面：样式「重」紫底白字，「薄」橙底白字（薄大），「快」红框红字，「少」黄框黄字。
     down = 重仓标记挪到第二行首笔区间后面（第一行放不下、会盖住公式后面的价差数时）：
     框成台阶形，第一行窄、第二行宽，第二行在公式那一行下面。"""
     f = font(size)

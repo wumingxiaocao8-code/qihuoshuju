@@ -35,6 +35,11 @@
   主力（腿2）竞价跳空比腿1 小 → 加「腿2秒进」（腿2 晚两秒才进多半亏，10.8 那种）；
   冷门腿竞价不到持仓 0.7‰ → 加「量少」（开盘第一个半秒能成交的手数只有其他大机会的一半到三分之二）。
   浮层上只在 HEAVY_SHOW 的品种（sc、nr，10-27 晚起加 fu、bu）跨月格子上贴，别的品种只记进 csv 和网页，攒几周对过再说。
+薄大（2026-10-30，sc 两年 L2 回放：分析/2026-10-26/腿2控价/小结.md 第 12、14 节），csv 的「薄大」：
+  腿2（主力）要吃那边（针往上 = 价差空单 = 买腿2 → 卖盘；针往下 → 买盘）第二档离第一档 ≥ 5 档（他定的「控价大」），
+  而且那边五档量不到平时（同场次前 40 次开盘、两边五档量平均的中位数；sc 两年回放种子 + 实盘）→ 判 ✅▲ 时记「薄大」。
+  sc 两年 17 次，腿2 同时打 4 手约打平、腿2 晚半秒 −8 万，跟「重」一起出现时也是亏的，所以浮层上「薄大」顶替「重」那一串。
+  只在 BOOK_SHOW 的品种（sc）判：nr、fu、bu、lu 回放里薄大不亏（bu 反而最赚），不加。所有格子的台阶、五档量、平时都记进 csv 攒着。
 
 结果：数据/开盘日期_时间/竞价判断.csv（开盘复盘对答案用）、竞价判断/开盘日期_时间.html（网页），
       数据/开盘日期_时间/竞价判断.json（给浮层读）。开盘后 1 分钟（21:01、9:01）标签自动消失。
@@ -97,6 +102,11 @@ SEED = rv.REVIEW / "两年回放_{}.csv"  # 两年回放切出来的开盘（只
 HEAVY = 2.0  # 立刻能成交那边偏出门槛 2 倍以上 = 大机会：不判 ❌（两年 5 次被判 ❌ 的全开到了门槛外），记「重仓标记」
 HEAVY_SHOW = ("sc", "nr", "fu", "bu")  # 浮层只在这几个品种的跨月格子上贴重仓标记（验过的：sc、nr 10-24，fu、bu 10-27 上期所两年回放），别的品种只记进 csv 和网页
 TAG_STYLE = {"腿2秒进": "快", "量少": "少"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框
+# ---- 薄大（2026-10-30，分析/2026-10-26/腿2控价/小结.md 第 12、14 节）----
+BOOK_SHOW = ("sc",)  # 只有 sc 判薄大（nr、fu、bu、lu 回放里薄大不亏）
+THIN_STEP = 5  # 要吃那边第二档离第一档 ≥ 5 档 = 控价大（他定的）
+THIN_N, THIN_MIN = 40, 10  # 平时 = 同场次前 40 次开盘腿2 两边五档量平均的中位数，不够 10 次不判
+BOOK_SEED = rv.REVIEW / "腿2盘口_{}.csv"  # 两年回放切出来的腿2 五档量（开盘、腿2五档均；只留本机），跟 数据/ 里的实盘开盘一起用
 SYMBOL = {"真": "✅", "半真": "▲", "假": "❌", "没针": "○", "不判断": "？"}
 SAY = {"真": "大概率整根开到", "半真": "大概率开到一部分", "假": "大概率开不到（假）"}
 KINDS = tuple(SYMBOL)
@@ -112,7 +122,8 @@ CSV_COLS = ["开盘", "组合", "腿1", "腿2", "品种", "档", "符号", "首�
             "针", "针偏几档", "门槛", "冷门腿", "冷门腿竞价手数", "冷门腿竞价占持仓‰", "冷门腿竞价持仓变化", "竞价量分",
             "立刻能卖", "立刻能买", "托住几成", "盘口分", "合计", "保留比例下", "保留比例上", "保留比例依据", "腿1盘口宽档",
             "腿1竞价手数", "腿1卖一量", "腿1买一量", "腿2竞价手数", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源",
-            "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "首笔半"]
+            "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "首笔半",
+            "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大"]
 
 
 # ---------- 判断（实盘、回放、开盘复盘共用） ----------
@@ -377,6 +388,13 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
             j = judge(snaps.get(s1), snaps.get(s2), closes.get(s1), closes.get(s2), t,
                       rv.NEEDLE_GATE.get(p1) if p1 == p2 else None, (c1, c2), MIX.get(p1) if p1 == p2 else None,
                       SLACK.get(p1, 0) if p1 == p2 else 0)
+        if p1 == p2 and not bad:
+            j |= leg2_book(j, snaps.get(s2), t, o, p1)
+            if j.get("薄大"):
+                side = "卖" if j["针偏几档"] > 0 else "买"
+                j["理由"] = (j.get("理由", "") + f"；薄大：腿2 要吃{side}盘，第二档离第一档 {j['腿2台阶2']:g} 档（≥ {THIN_STEP}），"
+                            f"{side}一到{side}五 {j['腿2要吃五档']} 手、是平时（{j['腿2平时']:g} 手）的 {j['腿2厚薄倍']:.2f} 倍"
+                            "（sc 两年回放这种腿2 晚半秒多半亏，浮层顶替「重」）")
         fit = range_fit(past, o, p1) if p1 == p2 and p1 in FIT else None
         rg = fit_range(j, t, fit)
         row = {"开盘": f"{o:%Y-%m-%d %H:%M}", "组合": f"{c1}-{c2}", "腿1": c1, "腿2": c2,
@@ -407,6 +425,92 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
     return rows
 
 
+# ---------- 薄大：腿2 盘口厚薄和台阶 ----------
+
+def five_avg(x: dict | None):
+    """快照里腿2 两边五档量的平均（买 + 卖 ÷ 2）；没有五档或全是 0 返回 None。"""
+    if not x:
+        return None
+    v = [x.get(f"{w}{k}量") for k, _ in LEVELS for w in ("买", "卖")]
+    if any(y is None for y in v) or not sum(v):
+        return None
+    return sum(v) / 2
+
+
+_NORM = {}
+
+
+def book_norm(o: datetime, product: str) -> tuple:
+    """腿2「平时」盘口量 (值, 依据)：o 以前同场次（夜盘 / 日盘）最近 THIN_N 次开盘、腿2 两边五档量平均的中位数，不够 THIN_MIN 次返回 None。
+    来源：BOOK_SEED（两年回放）+ 数据/ 里每次开盘的 竞价判断.csv（有「腿2五档均」就用，没有就读那次腿2 的 tick 文件）。"""
+    key = (o, product)
+    if key in _NORM:
+        return _NORM[key]
+    night = o.hour >= 20
+    vals = {}
+    seed = rv.read_csv(Path(str(BOOK_SEED).format(product)))
+    if seed is not None and len(seed):
+        for _, r in seed.iterrows():
+            t = datetime.strptime(str(r["开盘"]), "%Y-%m-%d %H:%M")
+            if num(r.get("腿2五档均")):
+                vals[t] = num(r["腿2五档均"])
+    for d in sorted(rv.DATA.glob("20??-??-??_????")):
+        try:
+            t = datetime.strptime(d.name, "%Y-%m-%d_%H%M")
+        except ValueError:
+            continue
+        if t >= o or (t.hour >= 20) != night:
+            continue
+        j = rv.read_csv(d / CSV_NAME)
+        if j is None or "品种" not in j:
+            continue
+        j = j[(j["品种"] == product) & j["腿2"].notna()]
+        if not len(j):
+            continue
+        v = num(j.iloc[0].get("腿2五档均")) if "腿2五档均" in j else None
+        if v is None:
+            files = list(d.glob(f"*.{j.iloc[0]['腿2']}.csv"))
+            v = five_avg(snap_from_ticks(rv.read_ticks(files[0]), t)) if files else None
+        if v:
+            vals[t] = v
+    past = [v for t, v in sorted(vals.items()) if t < o and (t.hour >= 20) == night][-THIN_N:]
+    out = (None, f"同场次只有 {len(past)} 次开盘（要 {THIN_MIN} 次）") if len(past) < THIN_MIN else (
+        float(pd.Series(past).median()), f"{'夜盘' if night else '日盘'}前 {len(past)} 次开盘的中位数")
+    _NORM[key] = out
+    return out
+
+
+def leg2_book(j: dict, x: dict | None, t: float, o: datetime, product: str) -> dict:
+    """腿2 要吃那边的台阶和厚薄（记进 csv）；BOOK_SHOW 的品种判 ✅▲ 时再看薄大。
+    针往上 = 价差空单 = 买腿2 → 吃卖盘，台阶2 = 卖二 − 卖一；针往下 = 价差多单 = 卖腿2 → 吃买盘，台阶2 = 买一 − 买二。"""
+    out = {}
+    avg = five_avg(x)
+    if avg is not None:
+        out["腿2五档均"] = round(avg, 1)
+    dev = j.get("针偏几档")
+    if not x or dev is None or dev == 0:
+        return out
+    w = "卖" if dev > 0 else "买"
+    p1, p2 = x.get(f"{w}1价"), x.get(f"{w}2价")
+    if p1 is not None and p2 is not None:
+        out["腿2台阶2"] = round((p2 - p1) / t * (1 if dev > 0 else -1), 1)
+    vol = [x.get(f"{w}{k}量") for k, _ in LEVELS]
+    if all(v is not None for v in vol):
+        out["腿2要吃五档"] = int(sum(vol))
+    if product not in BOOK_SHOW:
+        return out
+    norm, why = book_norm(o, product)
+    out["腿2平时依据"] = why
+    if norm is None or "腿2要吃五档" not in out:
+        return out
+    out["腿2平时"] = round(norm, 1)
+    out["腿2厚薄倍"] = round(out["腿2要吃五档"] / norm, 2)
+    if (j.get("档") in ("真", "半真") and out.get("腿2台阶2") is not None and out["腿2台阶2"] >= THIN_STEP - 1e-9
+            and out["腿2厚薄倍"] < 1):
+        out["薄大"] = "薄大"
+    return out
+
+
 # ---------- 快照 ----------
 
 def num(x):
@@ -432,7 +536,11 @@ def snap_from_ticks(df, o: datetime) -> dict | None:
     vol = num(r.get("成交手数")) or 0
     return {"时间": w.index[-1].to_pydatetime(), "竞价价": num(r["最新价"]) if vol > 0 else None, "竞价手数": vol,
             "持仓": num(r.get("持仓量")), "持仓变化": num(r.get("持仓变化")), "买一": num(r.get("买一价")),
-            "卖一": num(r.get("卖一价")), "买一量": num(r.get("买一量")), "卖一量": num(r.get("卖一量"))}
+            "卖一": num(r.get("卖一价")), "买一量": num(r.get("买一量")), "卖一量": num(r.get("卖一量")),
+            **{f"{w}{k}{x}": num(r.get(f"{w}{c}{x}")) for k, c in LEVELS for w in ("买", "卖") for x in ("价", "量")}}
+
+
+LEVELS = [(1, "一"), (2, "二"), (3, "三"), (4, "四"), (5, "五")]  # 快照里五档：买1价…卖5量（tick 文件里叫 买一价…卖五量）
 
 
 def before_of(q) -> dict:
@@ -466,7 +574,9 @@ def snap_from_quote(q, before: dict, o: datetime, carry: bool = False) -> dict:
     chg = oi - before["持仓"] if oi is not None and before.get("持仓") is not None else None
     return {"时间": when(q.datetime), "竞价价": num(q.last_price) if vol > 0 else None, "竞价手数": vol, "持仓": oi,
             "持仓变化": chg, "买一": num(q.bid_price1), "卖一": num(q.ask_price1),
-            "买一量": num(q.bid_volume1), "卖一量": num(q.ask_volume1)}
+            "买一量": num(q.bid_volume1), "卖一量": num(q.ask_volume1),
+            **{f"{w}{k}{x}": num(getattr(q, f"{a}_{y}{k}", None)) for k, _ in LEVELS
+               for w, a in (("买", "bid"), ("卖", "ask")) for x, y in (("价", "price"), ("量", "volume"))}}
 
 
 def close_of(api, s: str, before: dict, o: datetime):
@@ -522,6 +632,8 @@ def grouped(d: dict) -> dict:
 
 def tags_of(r: dict) -> list:
     """浮层上的重仓标记 [[字, 样式], …]，贴在符号后面；只有 HEAVY_SHOW 的品种（同品种跨月）贴，别的返回空。"""
+    if r.get("品种") in BOOK_SHOW and r.get("薄大") == "薄大":  # 薄大顶替重仓那一串（sc 两年回放：重 + 薄大 也是亏的）
+        return [["薄大", "薄"]]
     t = r.get("重仓标记")
     if r.get("品种") not in HEAVY_SHOW or not isinstance(t, str) or not t:
         return []
@@ -585,6 +697,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                     f"{r['托住几成'] * 100:.0f}%" if r.get("托住几成") is not None else "",
                     rv.fmt(r.get("立刻能成交几倍门槛"), 1), rv.fmt(r.get("合计"), 0, plus=True),
                     f"{rv.fmt(r['腿1跳空档'], 1, plus=True)} / {rv.fmt(r['腿2跳空档'], 1, plus=True)}" if r.get("腿1跳空档") is not None else "",
+                    ("薄大" + (f"（顶替 {r['重仓标记']}）" if r.get("重仓标记") else "")) if r.get("薄大") == "薄大" else
                     (r["重仓标记"] + ("" if tags_of(r) else "（浮层不贴，只记录）")) if r.get("重仓标记") else "",
                     ov.get(r["组合"], ""), rv.Raw(f"<span class='why'>{rv.esc(r.get('理由', ''))}</span>")])
     body.append(rv.table(["", "组合", "首笔区间", "猜首笔", "首笔半", "昨收价差", "针", "针偏几档", "冷门腿竞价占持仓‰", "竞价后持仓变化",
@@ -612,7 +725,10 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                 f"<p class='note'>重仓标记（2026-10-24 晚，sc、nr、lu 两年回放）：立刻能成交那边偏出门槛 {HEAVY:g} 倍以上记「重X.X」（几倍门槛，"
                 "3 倍以上更强）；主力（腿2）竞价跳空比腿1 小，加「腿2秒进」（腿2 晚两秒才进多半亏，10.8 那种）；"
                 f"冷门腿竞价不到持仓 {RATIO_LO}‰，加「量少」（开盘第一个半秒能成交的手数只有其他大机会的一半到三分之二）。"
-                f"浮层上只在 {'、'.join(HEAVY_SHOW)} 的跨月格子贴，别的品种只记在这里和 csv。都只是线索，不是买卖建议。</p>")
+                f"浮层上只在 {'、'.join(HEAVY_SHOW)} 的跨月格子贴，别的品种只记在这里和 csv。都只是线索，不是买卖建议。</p>"
+                f"<p class='note'>薄大（2026-10-30，sc 两年回放）：腿2 要吃那边（针往上看卖盘、往下看买盘）第二档离第一档 ≥ {THIN_STEP} 档，"
+                f"而且那边五档量不到平时（同场次前 {THIN_N} 次开盘两边五档量平均的中位数），判 ✅▲ 时记「薄大」，浮层上顶替「重」。"
+                "sc 两年 17 次：腿2 同时约打平、腿2 晚半秒多半亏。只判 " + "、".join(BOOK_SHOW) + "；只是线索，不是买卖建议。</p>")
     body.append("<h2>过去判得准不准</h2>" + history_table())
     return rv.page(f"竞价判断 {o:%m-%d %H:%M}", "".join(body))
 
@@ -820,6 +936,8 @@ def live(o: datetime, pairs: list, jf: Path, state: dict, page: Path, skew: floa
         past = rv.read_csv(rv.REC_FILE)
         for p in sorted({rv.product_of(s) for s in symbols} & set(FIT)):  # sc 首笔区间的系数也先算好（要 import scipy，约 1 秒）
             range_fit(past, o, p)
+        for p in sorted({rv.product_of(s) for s in symbols} & set(BOOK_SHOW)):  # 薄大要的腿2「平时」盘口量也先算好
+            book_norm(o, p)
         log["取好昨收"] = clock()
         print(f"连上天勤 {log['连上']:%H:%M:%S}，订阅 {len(quotes)} 个合约" + (f"（{len(late)} 个连上时竞价已经出来了）" if late else "")
               + f"，{log['取好昨收']:%H:%M:%S} 取好昨收"
