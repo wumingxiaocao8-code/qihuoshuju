@@ -18,7 +18,7 @@
               20:53 / 8:53 开盘预估.py 估完就写进来（那时还没 tick，这几列和昨收、外盘先有，开盘后整行补全）
   预估误差    腿2 竞价价 − 开盘预估.py 估的价（没有预估就空着）
   59 分判断   竞价判断.py 在 20:59 / 8:59 判的：真（✅ 大概率整根开到针附近）/ 半真（▲ 开到一部分）/ 假（❌）/ 没针 / 不判断，
-              判断得分（竞价量分 + 盘口分）、托住几成、猜首笔、首笔半（昨收价差 + 0.5 ×（猜首笔 − 昨收价差），没有猜首笔就空着）、预计首笔区间、首笔在区间里；
+              判断得分（竞价量分 + 盘口分）、托住几成、猜首笔、首笔半（昨收价差 + 0.5 ×（猜首笔 − 昨收价差），ag、sn、ni 是 1/3；没有猜首笔就空着）、预计首笔区间、首笔在区间里；
               判断来源 = 实盘（当时写的 竞价判断.csv）或 回放（那次没跑竞价判断，用存下来的 tick 补算）；
               v1判断 = 同一根针 v1 会判成什么（sc 10-24 起换成混合版，对照用）；立刻能卖、立刻能买 = 竞价后盘口的价差（拟合 sc 首笔区间用）
   标签        星期、周一早盘、节后第一次开盘、换月期（每月 8–15 号）、腿1 离到期几天；
@@ -487,7 +487,7 @@ def build_records(out: Path = DATA) -> pd.DataFrame:
                 rec = analyze(folder, open_ts, s1, s2, closes, fc)
                 try:
                     j = live.get(rec["组合"]) or jd.replay_pair(folder, open_ts, s1, s2, closes, past)
-                    rec |= jd.review_cols(j, rec.get("首笔价差"))
+                    rec |= jd.review_cols(j, rec.get("首笔价差"), product_of(s1) if product_of(s1) == product_of(s2) else None)
                 except Exception as e:
                     rec["备注"] = "；".join(x for x in (rec.get("备注"), f"59 分判断算错了：{type(e).__name__} {e}") if x)
                 rows.append(rec)

@@ -99,6 +99,7 @@ MIX = {p: 0.9 for p in rv.NEEDLE_GATE}  # 第 2 步改成猜首笔 = 昨收价�
 # 混合版猜的首笔差门槛几档以内也算 ▲、不判 ❌（他定的：真针判成 ❌ 最怕，假针判成 ▲ 无所谓）：sc 5 档，别的品种按门槛的三分之一
 SLACK = {p: round(g / 3) for p, g in rv.NEEDLE_GATE.items()}
 HALF = 0.5  # 标签上的「首笔半」= 昨收价差 + HALF ×（猜首笔 − 昨收价差）
+HALF_BY = {"ag": 1 / 3, "sn": 1 / 3, "ni": 1 / 3}  # 按品种另设（10-31 他定的）：ag、sn、ni 挂三分之一，两年回放比挂一半多赚 4–12%（腿2 晚半秒），判断不变
 FIT = tuple(rv.NEEDLE_GATE)  # 首笔区间用最近 150 次开盘的分位回归（有两年回放种子的 sc、nr 马上用；别的品种攒够 60 次开盘前还用老办法）
 FIT_N, FIT_MIN, FIT_Q = 150, 60, (0.1, 0.9)  # 最近 150 次开盘，不够 60 次用老办法；八成范围（P10–P90）
 FIT_Q_BY = {"fu": (0.05, 0.95), "bu": (0.05, 0.95)}  # 按品种另设：fu、bu 用九成（10-27 晚他定的；八成在 fu、bu 上窄了但少包住，九成跟老办法包住得差不多、更窄）
@@ -425,8 +426,8 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
             row |= {"首笔下沿": rg[0], "首笔上沿": rg[1]}
         name = fl.label_name(s1, s2)
         guess = f"{j['猜首笔']:.{decimals(t) + 1}f}" if j.get("猜首笔") is not None else ""  # 混合版猜的首笔，写在区间前面
-        if guess:  # 首笔半 = 昨收价差 + (猜首笔 − 昨收价差) × 0.5（10-25 他定的，跟猜首笔并排写）
-            row["首笔半"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * HALF, decimals(t) + 1)
+        if guess:  # 首笔半 = 昨收价差 + (猜首笔 − 昨收价差) × 0.5（10-25 他定的，跟猜首笔并排写；ag、sn、ni × 1/3，见 HALF_BY）
+            row["首笔半"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * half_of(p1 if p1 == p2 else None), decimals(t) + 1)
         row["文字"] = (f"{name}  首笔 {guess}  首笔半 {row['首笔半']:.{decimals(t) + 1}f}\n"  # 两行：浮层把第二行写在下面
                       f"首笔区间 ({price(rg[0], t)} ~ {price(rg[1], t)})" if rg and guess else
                       f"{name}  首笔 {price(rg[0], t)} ~ {price(rg[1], t)}" if rg else f"{name}  {j['理由']}")
@@ -735,7 +736,8 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                 "按针真假的定义分：离针 1 档以内或更远 → ✅，偏出门槛 → ▲，在门槛以内或往反方向偏 → ❌；"
                 f"差门槛（{'，'.join(f'{chr(12289).join(ps)} {k} 档' for k, ps in grouped(SLACK).items())}）以内的也算 ▲，不判 ❌（真针判成 ❌ 最怕）。"
                 "盘口缺一边时按 v1：针不到门槛的 "
-                f"{BIG} 倍 → ✅，否则 ▲。混合版的格子上，v1 判得不一样时符号下面小字写着 v1 的。</p>"
+                f"{BIG} 倍 → ✅，否则 ▲。混合版的格子上，v1 判得不一样时符号下面小字写着 v1 的。"
+                f"首笔半 = 昨收价差 + {HALF:g} ×（猜首笔 − 昨收价差），{'、'.join(HALF_BY)} 是 1/3（10-31 有色两年回放：挂近一点成交多、更赚）。</p>"
                 "<p class='note'>首笔区间："
                 + (f"有两年回放或攒够 60 次开盘的品种用分位回归——{rv.esc('；'.join(fits))}。" if fits else "")
                 + ("还没攒够的品种：竞价后盘口立刻能成交的价差（两头各放 1 档），和「昨收价差 + 针变化 × 过去首笔保留针几成的八成范围」"
@@ -803,14 +805,19 @@ def read_live(folder: Path) -> dict:
     return {r["组合"]: r.to_dict() for _, r in df.iterrows() if r["来源"] == "实盘"}
 
 
-def review_cols(j: dict, first) -> dict:
+def half_of(prod) -> float:
+    """首笔半的系数：HALF_BY 里有的品种按它，别的 HALF。"""
+    return HALF_BY.get(prod, HALF)
+
+
+def review_cols(j: dict, first, prod=None) -> dict:
     """开盘复盘.csv 里加的几列：59分判断、判断得分、托住几成、预计首笔区间、首笔在区间里、判断来源、
     v1判断（混合版之前的实盘没有这一列，就是 59分判断）、立刻能卖、立刻能买（以后拟合首笔区间用）、
-    猜首笔、首笔半（和竞价判断网页、浮层上的一样：首笔半 = 昨收价差 + HALF ×（猜首笔 − 昨收价差））；首笔上下沿不写进表格。"""
+    猜首笔、首笔半（和竞价判断网页、浮层上的一样：首笔半 = 昨收价差 + HALF ×（猜首笔 − 昨收价差），ag、sn、ni 按 HALF_BY）；首笔上下沿不写进表格。"""
     lo, hi = num(j.get("首笔下沿")), num(j.get("首笔上沿"))
     v1 = j.get("v1档")
     guess, base = num(j.get("猜首笔")), num(j.get("昨收价差"))
-    half = round(base + (guess - base) * HALF, 4) if guess is not None and base is not None else None  # 没有猜首笔（v1 或没判）就空着
+    half = round(base + (guess - base) * half_of(prod), 4) if guess is not None and base is not None else None  # 没有猜首笔（v1 或没判）就空着
     out = {"59分判断": j.get("档", ""), "判断得分": num(j.get("合计")), "托住几成": num(j.get("托住几成")),
            "判断来源": j.get("来源", ""), "首笔下沿": lo, "首笔上沿": hi,
            "v1判断": v1 if isinstance(v1, str) and v1 else j.get("档", ""),
