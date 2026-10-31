@@ -72,8 +72,9 @@ ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到
 SECOND = (120, 200, 255)  # 标签第二行（首笔区间）浅蓝
 GREY = (170, 170, 170)  # 盘口框里的「竞」
 VOL = (235, 200, 80)  # 盘口框：竞价成交手数黄
-TAG_COLORS = {"重": (150, 70, 225), "快": (235, 70, 70), "少": VOL, "薄": (235, 120, 20), "灰": MUTED}  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框；薄大 橙底白字（10-30，顶替重）
-FILLED = ("重", "薄")  # 实心底、白字的样式
+TAG_COLORS = {"V重": (215, 40, 40), "V打": (35, 160, 75), "V小": (225, 160, 20), "V关": (95, 95, 95),  # 重 / 打 / 小 / 关 色块
+              "重": (150, 70, 225), "快": (235, 70, 70), "少": VOL, "薄": (235, 120, 20), "灰": MUTED}  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框；薄大 橙底白字（10-30，顶替重）
+FILLED = ("重", "薄", "V重", "V打", "V小", "V关")  # 实心底、白字的样式
 HEAD_W, HEAD_H = 0.27, 15  # 比对用的标题条：格子宽度的前 27%、格子最上面 15 像素（合约名那一行；再宽会带进右边时间的第一个字）
 MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就算这格换了
 GAP = 8  # 标签左边离公式那行字至少空 8 像素；放不下全名就去掉组合名，不盖住公式后面的价差数
@@ -297,20 +298,21 @@ def tag_width(d, t: str, size: float) -> float:
     return d.textlength(t, font=bold(size)) + size * 1.0
 
 
-def badge_width(d, text: str, size: float, tags=(), down: bool = False) -> float:
-    """标签整个有多宽。down = 重仓标记挪到第二行（首笔区间后面）。"""
-    if "\n" in text:  # 两行的标签（第二行是首笔区间）：取两行里宽的那行
+def badge_width(d, text: str, size: float, tags=(), down: bool = False, lead=()) -> float:
+    """标签整个有多宽。down = 重仓标记挪到第二行；lead = 第一行符号后面的色块（重 / 打 / 小 / 关）。"""
+    if "\n" in text:  # 两行的标签：取两行里宽的那行
         a, b = text.split("\n", 1)
-        return max(badge_width(d, a, size, () if down else tags), badge_width(d, b, size, tags if down else ()))
+        return max(badge_width(d, a, size, () if down else tags, lead=lead), badge_width(d, b, size, tags if down else ()))
     pad = size * .45
-    return pad + size + pad * .8 + sum(tag_width(d, t, size) for t, _ in tags) + d.textlength(text, font=font(size)) + pad
+    return (pad + size + pad * .8 + sum(tag_width(d, t, size) for t, _ in tuple(lead) + tuple(tags))
+            + d.textlength(text, font=font(size)) + pad)
 
 
-def row1_width(d, text: str, size: float, tags=(), down: bool = False) -> float:
+def row1_width(d, text: str, size: float, tags=(), down: bool = False, lead=()) -> float:
     """标签在公式那一行占多宽（会不会盖住价差数看这个）。重仓标记没挪下去时整个框一样宽；挪下去了只算第一行。"""
     if down and "\n" in text:
-        return badge_width(d, text.split("\n", 1)[0], size)
-    return badge_width(d, text, size, tags)
+        return badge_width(d, text.split("\n", 1)[0], size, lead=lead)
+    return badge_width(d, text, size, tags, lead=lead)
 
 
 def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
@@ -328,6 +330,7 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
 
 
 SHORT_TAGS = {"腿2秒进": "腿2"}  # 浮层上写短名（10-29 晚他定的），网页和 csv 还是全称
+SHOW_RANGE = False  # 浮层写不写首笔区间（10-31 晚他定的不写；想要回来改成 True）
 
 
 def short(text: str) -> str:
@@ -337,8 +340,46 @@ def short(text: str) -> str:
     return "\n".join([first] + rest)
 
 
-def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(), down: bool = False) -> None:
+VERDICT = True  # 10-31 晚他定的：第一行符号后面贴一个小色块「重 / 打 / 小 / 关」（该上手数、正常打、小手数、不打）；False = 不贴
+SMALL_WHEN_LIGHT = ("al", "zn", "ag", "ni")  # 判 ✅▲ 但不重 → 小（有色两年回放：扣完费只剩 1–2.5 档）
+OFF_WHEN_LIGHT = ("cu", "sn", "pb")  # 判 ✅▲ 但不重 → 关（铜手续费 3.3 档、锡 2026 以后晚半秒就亏、铅量太少）
+CAP_NORMAL = ("pb",)  # 重了也只到「打」（铅首个半秒只有 1–2 手）
+DOWN = {"重": "打", "打": "小", "小": "小"}
+
+
+def verdict(key: str, kind: str, tags) -> tuple[str, str] | None:
+    """浮层色块：(重 / 打 / 小 / 关, 原因)；没针、不判断返回 None（不贴色块，标签照老样子）。
+    规则照 分析/2026-10-31/有色开盘/小结.md 第 9 节的手数表，10-31 晚他定了两处：腿2秒进降一级；
+    sc nr fu bu 和 ss br ao sp rb hc ru 不重也算「打」。只是线索，不是买卖建议。"""
+    if kind in ("没针", "不判断"):
+        return None
+    if kind == "假":
+        return "关", "判❌"
+    names = [t for t, _ in tags]
+    heavy = next((float(t[1:]) for t in names if re.fullmatch(r"重\d+(\.\d+)?", t)), None)
+    p = re.match(r"[a-z]+", key).group(0)
+    if "薄大" in names:
+        return "关", "薄大"
+    if heavy is None:
+        if "不重" in names or p in OFF_WHEN_LIGHT:
+            return "关", "不重"
+        return ("小" if p in SMALL_WHEN_LIGHT else "打"), "不重"
+    why = [f"重{heavy:g}"]
+    level = "重" if heavy >= 3 else "打"
+    if "量少" in names:
+        why.append("量少")
+        level = DOWN[level] if level == "重" else level
+    if p in CAP_NORMAL and level == "重":
+        level = "打"
+    if "腿2秒进" in names:
+        why.append("腿2秒进↓")
+        level = DOWN[level]
+    return level, "·".join(why)
+
+
+def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(), down: bool = False, lead=()) -> None:
     """一个标签，右上角对着 (right, top)；size = 字号（像素）。
+    lead = 第一行符号紧后面的色块（「重 / 打 / 小 / 关」，样式 V重 …），不管 down 都在第一行。
     tags = 重仓标记 ((字, 样式), …)，画在符号后面：样式「重」紫底白字，「薄」橙底白字（薄大），「快」红框红字，「少」黄框黄字。
     down = 重仓标记挪到第二行首笔区间后面（第一行放不下、会盖住公式后面的价差数时）：
     框成台阶形，第一行窄、第二行宽，第二行在公式那一行下面。"""
@@ -346,10 +387,10 @@ def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(
     pad, s, h = size * .45, size * 1.0, size * 1.5
     full, (text, second) = text, (text.split("\n", 1) + [""])[:2]  # 有第二行（首笔区间）就写在第一行字下面，框跟着变高
     down = down and bool(tags)
-    x0 = right - badge_width(d, full, size, tags, down)
+    x0 = right - badge_width(d, full, size, tags, down, lead)
     lw = max(1, round(size / 14))
     if down:
-        a = right - badge_width(d, text, size)  # 第一行的左边
+        a = right - badge_width(d, text, size, lead=lead)  # 第一行的左边
         b = right - badge_width(d, second, size, tags)  # 第二行的左边
         r = size * .3
         d.rounded_rectangle([a, top, right, top + h + r], radius=r, fill=BG)
@@ -362,7 +403,7 @@ def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(
                             outline=COLORS[kind], width=lw)
         x1 = x0 + pad
     symbol(d, kind, x1, top + (h - s) / 2, s)
-    x = draw_tags(d, () if down else tags, x1 + s + pad * .8, top + h / 2, h, size)
+    x = draw_tags(d, tuple(lead) + (() if down else tuple(tags)), x1 + s + pad * .8, top + h / 2, h, size)
     d.text((x, top + h / 2), text, font=f, fill=MUTED if kind in ("没针", "不判断") else FG, anchor="lm")
     if second or down:
         x = (b + pad + s + pad * .8) if down else (x0 + pad + s + pad * .8)
@@ -455,18 +496,24 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
             # 不按每格实际的字量，免得每格样子不一样：公式那一行写到离格子左边「公式宽」（看板.txt，博易云的像素）。
             # 所以第一行只写「▲ 首-217.0 半-203.5」（不写组合名），重仓标记一律放第二行，盘口框一律放在公式那一行下面；
             # 第一行还放不下（数字特别长）就把「半…」挪到第二行开头。
-            text = short(re.sub(r"^\S+-\S+  ", "", text))
+            text = re.sub(r"^\S+-\S+  ", "", text)
+            if not SHOW_RANGE:  # 10-31 晚他定的：浮层不写首笔区间（br、ao2612 那格挡住价差数），网页和 csv 照写
+                text = re.sub(r"\n?首笔区间 \([^)]*\)", "", text)
+                text = re.sub(r"^首笔 \S+ ~ \S+$", "", text)  # 只有区间的（○ ？ 和第 1 步的 ❌）只剩符号
+            text = short(text)
+            v = verdict(key, kind, tags) if VERDICT else None  # 「重 / 打 / 小 / 关」色块（要用全称的标记，放在缩短之前）
+            lead = ((v[0], "V" + v[0]),) if v else ()
             tags = tuple((SHORT_TAGS.get(t, t), st) for t, st in tags)
             first, *rest = text.split("\n", 1)
-            if " 半" in first and right - badge_width(d, first, size) < x0 + o["公式宽"]:
+            if " 半" in first and right - badge_width(d, first, size, lead=lead) < x0 + o["公式宽"]:
                 first, half = first.split(" 半", 1)
                 text = "\n".join([first, "半" + half + ("  " + rest[0] if rest else "")])
             down = bool(tags)
             if down and "\n" not in text:
                 text += "\n"
-            badge(d, kind, text, right, top, size, tags, down)
-            left = right - badge_width(d, text, size, tags, down)
-            lefts[(i, j)] = right - row1_width(d, text, size, tags, down)
+            badge(d, kind, text, right, top, size, tags, down, lead)
+            left = right - badge_width(d, text, size, tags, down, lead)
+            lefts[(i, j)] = right - row1_width(d, text, size, tags, down, lead)
             if book:
                 book_box(d, book, left - size * .6, top + ROW_H * o["倍数"], size)
     if note and note.get("文字"):
