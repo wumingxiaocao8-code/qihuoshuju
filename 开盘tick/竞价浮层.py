@@ -67,7 +67,7 @@ BOLD_FILE = FONT_FILE.with_name("msyhbd.ttc")  # 微软雅黑粗体（重仓标�
 # 位置的默认值（按博易云自己的像素，从窗口里面的左上角算）；看板.txt 里写了就用那边的。
 # 博易云不认屏幕缩放（DPI 96），Windows 把它整个放大（这台电脑缩放 150%，放大 1.5 倍），贴到屏幕上时乘这个倍数（dpi_ratio）
 DEFAULTS = {"网格左": 19, "网格上": 47, "网格右": 0, "网格下": 20, "标签上": 20, "标签右": 8, "字号": 10,
-            "公式宽": 410, "提示左": 560, "提示上": 2, "提示字号": 13}
+            "公式宽": 410, "公式左": 66, "提示左": 560, "提示上": 2, "提示字号": 13}
 ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到哪用；跟标签字号无关
 SECOND = (120, 200, 255)  # 标签第二行（首笔区间）浅蓝
 GREY = (170, 170, 170)  # 盘口框里的「竞」
@@ -80,9 +80,10 @@ MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就
 GAP = 8  # 标签左边离公式那行字至少空 8 像素；放不下全名就去掉组合名，不盖住公式后面的价差数
 LIFE = 600  # 最多开 10 分钟（竞价判断.py 出意外没写结果时，浮层自己关掉）
 QUIET = (3, 5)  # 开盘前 3 秒到开盘后 5 秒不截屏比对格子（标签照样显示），不跟开盘那一下抢电脑
-SAMPLES = [("真", "首笔 -9.0 ~ -7.6"), ("半真", "首笔 -21 ~ -9"), ("假", "首笔 -8.9 ~ -7.3"),
+SAMPLES = [("真", "首笔 -217.35  首笔半 -203.52  远 -199.81\n首笔区间 (-221 ~ -196)"),  # 11-02 夜起有猜首笔的格子写「半」「远」（四位价差最长）
+           ("半真", "首笔 -9.86  首笔半 -5.93  远 -5.52\n首笔区间 (-12 ~ -4)"), ("假", "首笔 -1.44  首笔半 -0.82  远 -0.68\n首笔区间 (-3 ~ 0)"),
            ("没针", "首笔 -11 ~ -9"), ("不判断", "竞价没成交")]
-TAG_SAMPLES = {"sc": ("首笔 -1.44  首笔半 -0.82\n首笔区间 (-4.0 ~ -0.8)", (("重2.9", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
+TAG_SAMPLES = {"sc": ("首笔 -3.86  首笔半 -5.93  远 -5.72\n首笔区间 (-6.5 ~ -3.1)", (("重3.1", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
                "nr": ("首笔 -40 ~ -15", (("重2.3", "重"), ("量少", "少")))}
 
 # 用自己的一份 user32，设参数类型不影响同一进程里别的代码
@@ -331,12 +332,17 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
 
 SHORT_TAGS = {"腿2秒进": "腿2"}  # 浮层上写短名（10-29 晚他定的），网页和 csv 还是全称
 SHOW_RANGE = False  # 浮层写不写首笔区间（10-31 晚他定的不写；想要回来改成 True）
+BELOW = True  # 11-02 夜他定的：标签（符号、半、远、重仓标记）放在公式那一行下面一行，竞价手数框再下面一行；False = 老排法（标签在公式那行右边）
+SHOW_GUESS = False  # 浮层写不写猜的首笔「首…」（11-02 夜他定的不写，只留「半」和「远」；网页和 csv 照写）
 
 
 def short(text: str) -> str:
-    """浮层标签第一行写短：「首笔 423.2  首笔半 442.1」→「首423.2 半442.1」；第二行「首笔区间」不动。"""
+    """浮层标签第一行写短：「首笔 423.2  首笔半 442.1  远 445.0」→「半442.1 远445.0」（SHOW_GUESS = True 时前面留「首423.2」）；
+    第二行「首笔区间」不动。"""
     first, *rest = text.split("\n", 1)
-    first = first.replace("首笔半 ", "半").replace("首笔 ", "首").replace("  ", " ")
+    if not SHOW_GUESS:
+        first = re.sub(r"首笔 (?!\S+ ~)\S+\s*", "", first)  # 只有区间的「首笔 a ~ b」（SHOW_RANGE）不动
+    first = first.replace("首笔半 ", "半").replace("远 ", "远").replace("首笔 ", "首").replace("  ", " ")
     return "\n".join([first] + rest)
 
 
@@ -504,10 +510,20 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
             v = verdict(key, kind, tags) if VERDICT else None  # 「重 / 打 / 小 / 关」色块（要用全称的标记，放在缩短之前）
             lead = ((v[0], "V" + v[0]),) if v else ()
             tags = tuple((SHORT_TAGS.get(t, t), st) for t, st in tags)
+            if BELOW:  # 11-02 夜他定的：标签放在「套利分析」公式那一行下面一行，左边跟「套」字对齐；竞价手数框再下面一行，也左对齐
+                top = top + (ROW_H + 3) * o["倍数"]  # 多空 3 像素，标签不压公式那行字
+                left = x0 + o.get("公式左", DEFAULTS["公式左"] * o["倍数"])  # 格子左边到「套」字（看板.txt，博易云的像素，11-02 夜量的 66）
+                text = text.rstrip("\n")
+                badge(d, kind, text, left + badge_width(d, text, size, tags, False, lead), top, size, tags, False, lead)
+                if book:
+                    book_box(d, book, left + book_width(d, book, size), top + size * 1.5 * (2 if "\n" in text else 1) + size * .3, size)
+                continue
             first, *rest = text.split("\n", 1)
-            if " 半" in first and right - badge_width(d, first, size, lead=lead) < x0 + o["公式宽"]:
-                first, half = first.split(" 半", 1)
-                text = "\n".join([first, "半" + half + ("  " + rest[0] if rest else "")])
+            if right - badge_width(d, first, size, lead=lead) < x0 + o["公式宽"]:  # 放不下：先把「半…」挪下去，没有「首」时挪「远…」
+                cut = " 半" if " 半" in first else " 远" if " 远" in first else None
+                if cut:
+                    first, moved = first.split(cut, 1)
+                    text = "\n".join([first, cut.strip() + moved + ("  " + rest[0] if rest else "")])
             down = bool(tags)
             if down and "\n" not in text:
                 text += "\n"

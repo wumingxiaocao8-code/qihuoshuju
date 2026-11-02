@@ -71,7 +71,8 @@ REC_COLS = ["开盘", "场次", "星期", "组合", "品种", "腿1", "腿2", "�
             "腿1预估", "腿2预估", "预测区间", "预测方向", "预估误差", "在范围内", "仓储提示", "长期事件",
             "周一早盘", "节后", "换月期", "腿1离到期天数", "备注", "v1判断", "立刻能卖", "立刻能买",
             "重仓标记", "模拟成交", "模拟挂价", "模拟成交价差", "模拟成交秒", "模拟出场价差", "模拟出场", "模拟档数",
-            "模拟每手毛元", "模拟手续费", "模拟每手净元"]
+            "模拟每手毛元", "模拟手续费", "模拟每手净元", "远档", "远档挂价", "远档成交", "远档成交价差", "远档成交秒", "远档出场价差",
+            "远档出场", "远档档数", "远档每手毛元", "远档每手净元"]
 PCT_COLS = ["主力跳空%", "腿1跳空%"]  # 只在程序里用（记分卡、涨跌幅统计），不写进表格
 HIDDEN_COLS = PCT_COLS + ["预估下沿", "预估上沿", "主力在范围内", "首笔下沿", "首笔上沿"]  # 只在程序里用
 # 写进表格的列和顺序（小草定的）：针变化只在程序里用（针方向、记分卡），不写进表格
@@ -95,9 +96,12 @@ RATIO_BINS = [(0.7, "0.7‰ 以下"), (1.5, "0.7–1.5‰"), (math.inf, "1.5‰ 
 TRUTHS = ("真", "半真", "假", "反向", "没针")
 # 照浮层标签做的模拟盈亏（10-31 加，口径照抄两年回放 分析/2026-10-27/fu和bu回测/脚本/回测.py 和 测试/2026-10-31_首笔半效果/c.py）：
 # 判 ✅▲ 的在首笔半挂一手，开盘后 SIM_VALID 秒内那半秒的成交均价差或立刻能成交的价比挂价好就成交（按那个更好的价算，不按挂价）；
-# 止盈 = 挂价往有利方向 SIM_TP 档、止损 = 比成交价亏 SIM_SL 档，成交后 SIM_DELAY 秒内不止损，都按当时立刻能平的价平；
+# 止盈 = 挂价往有利方向 SIM_TP 档、止损 = 比成交价亏 SIM_SL 档（按品种的见 SIM_TPSL），成交后 SIM_DELAY 秒内不止损，都按当时立刻能平的价平；
 # tick 只到开盘后 60 秒，到时按最后能平的价算（两年回放最多拿 300 秒）。全市场的量都算成自己的，是上限。
 SIM_VALID, SIM_TP, SIM_SL, SIM_DELAY = 5, 5, 10, 10
+# 按品种的止盈 / 止损档数（11-02 夜他定的，没列的品种用 SIM_TP / SIM_SL：sn ni sp ss 5 / 10）
+SIM_TPSL = {"ag": (8, 8), "cu": (6, 6), "sc": (6, 10), "fu": (6, 20), "bu": (6, 20), "lu": (6, 20),
+            **{p: (4, 4) for p in ("al", "pb", "zn", "hc", "rb", "ao", "ru", "br", "nr")}}
 # 合约乘数（同 成交复盘.py 的 MULT），档数 × 最小变动价位 × 乘数 = 每手元
 MULT = {"au": 1000, "ag": 15, "cu": 5, "bc": 5, "al": 5, "zn": 5, "pb": 5, "ni": 1, "sn": 1, "ao": 20,
         "rb": 10, "hc": 10, "ss": 5, "wr": 10, "ru": 10, "nr": 10, "br": 5, "bu": 10, "fu": 10, "lu": 10,
@@ -498,11 +502,12 @@ def simulate(spread: pd.DataFrame, open_ts, L: float, s: int, tick: float, p: st
             fill = (ti, c[0])
             break
     out = {"模拟挂价": L}
+    tp, sl = SIM_TPSL.get(p, (SIM_TP, SIM_SL))
     if fill is None:
         return out | {"模拟成交": "否"}
     tf, F = fill
     out |= {"模拟成交": "是", "模拟成交秒": round(tf, 1), "模拟成交价差": round(F, 4)}
-    side, tgt, last, how = -s, L - s * SIM_TP * tick, None, ""
+    side, tgt, last, how = -s, L - s * tp * tick, None, ""
     for ti, px in zip(t, leave):
         px = num(px)
         if ti <= tf or px is None:
@@ -511,7 +516,7 @@ def simulate(spread: pd.DataFrame, open_ts, L: float, s: int, tick: float, p: st
         if (px - tgt) * side >= -1e-9:
             how = f"止盈 {ti:.1f} 秒"
             break
-        if ti > tf + SIM_DELAY + 1e-9 and (px - F) * side <= -SIM_SL * tick + 1e-9:
+        if ti > tf + SIM_DELAY + 1e-9 and (px - F) * side <= -sl * tick + 1e-9:
             how = f"止损 {ti:.1f} 秒"
             break
     if last is None:
@@ -547,6 +552,10 @@ def sim_cols(folder: Path, open_ts, s1: str, s2: str, rec: dict, tick) -> dict:
     if spread is None:
         return {}
     out = simulate(spread, open_ts, round(round(half / tick) * tick, 6), s, tick, p)
+    far = num(rec.get("远档"))
+    if far is not None and k != "假":  # 远档（11-02 夜加）：同样模拟一手，记分卡拿来比「首笔半 + 远档」两层和只挂首笔半
+        f = simulate(spread, open_ts, round(round(far / tick) * tick, 6), s, tick, p)
+        out |= {"远档" + c[2:]: v for c, v in f.items() if c.startswith("模拟") and c != "模拟手续费"}
     if k == "假":
         out["模拟成交"] = {"是": "❌假设成交", "否": "❌假设没成交"}[out["模拟成交"]]
     return out
@@ -814,6 +823,35 @@ def sim_stats(g: pd.DataFrame) -> dict:
             "平均净元": f"{fmt(net.mean(), 0, plus=True)}（{len(net)} 次）" if len(net) else "—"}
 
 
+def two_tier(s: pd.DataFrame) -> str:
+    """11-02 夜加：判 ✅▲ 的每组 10 手，「只挂首笔半 10 手」和「首笔半 n1 手 + 远档 n2 手」（竞价判断.FAR）各赚多少。
+    每档各按模拟的一手算（没成交算 0），两年回放说两层更好，这里用以后真实的开盘验证。"""
+    import 竞价判断 as jd
+    s = s[s["品种"].isin(jd.FAR.keys()) & pd.to_numeric(s["远档"], errors="coerce").notna()]
+    if not len(s):
+        return ""
+    def per(g, pre, col):
+        v = pd.to_numeric(g[pre + col], errors="coerce")
+        return v.where(g[pre + "成交"] == "是", 0).fillna(0)
+    rows = []
+    for lab, g in [("全部", s)] + sorted(s.groupby("品种"), key=lambda kv: kv[0]):
+        n1 = g["品种"].map(lambda p: jd.FAR[p][1]); n2 = g["品种"].map(lambda p: jd.FAR[p][2])
+        cells = []
+        for col, dig in (("档数", 0), ("每手毛元", 0), ("每手净元", 0)):
+            a, b = per(g, "模拟", col), per(g, "远档", col)
+            if col == "每手净元" and pd.to_numeric(g["模拟每手净元"], errors="coerce").isna().all():
+                cells += ["—", "—"]; continue
+            cells += [fmt((10 * a).sum(), dig, plus=True), fmt((n1 * a + n2 * b).sum(), dig, plus=True)]
+        hit = lambda pre: int((g[pre + "成交"] == "是").sum())
+        rows.append([lab, len(g), hit("模拟"), hit("远档")] + cells + [small(g["开盘"].nunique())])
+    farn = "，".join(f"{p} {k:g}（{a}+{b}）" for p, (k, a, b) in jd.FAR.items())
+    return ("<h4>两层挂单 vs 只挂首笔半（每组 10 手，判 ✅▲ 的）</h4>"
+            f"<p class='note'>两层 = 首笔半 n1 手 + 远档 n2 手（远档 = 昨收价差 + 系数 ×（猜首笔 − 昨收价差），{farn}；11-02 夜定）。"
+            "每档各模拟一手、没成交算 0，再乘手数；两年回放两层更好，这里看以后真实的开盘是不是也这样。</p>"
+            + table(["品种", "判 ✅▲", "首笔半成交", "远档成交", "只挂首笔半 档", "两层 档", "只挂首笔半 毛元", "两层 毛元",
+                     "只挂首笔半 扣费后元", "两层 扣费后元", "样本"], rows))
+
+
 def rule_money(rec: pd.DataFrame) -> str:
     """规则六：照浮层标签做赚不赚钱。判 ✅▲ 的按品种、符号、重 / 不重、实盘 / 回放累计；判 ❌ 但实际开到的另列「错过的」。"""
     s = rec[rec["59分判断"].isin(["真", "半真"])].copy()
@@ -849,6 +887,7 @@ def rule_money(rec: pd.DataFrame) -> str:
                        r["模拟出场"] if isinstance(r["模拟出场"], str) else ("没成交" if r["模拟成交"] == "❌假设没成交" else ""),
                        colored(r["模拟档数"], 1), fmt(r["模拟每手毛元"], 0, plus=True)]
                       for _, r in miss.sort_values("开盘", ascending=False).iterrows()])
+    out += two_tier(s)
     last = s[s["开盘"] == rec["开盘"].max()]
     if len(last):
         out += (f"<h4>最近一次开盘（{esc(rec['开盘'].max())}）判 ✅▲ 的</h4>"
@@ -1045,7 +1084,9 @@ def write_page(rec: pd.DataFrame) -> Path | None:
                 "<p class='note'>判得准不等于赚钱：真针判成 ❌ 就少赚，▲ 里的假针多半挂不进、不亏。这里按钱记分，以后改参数看这张表的钱有没有变多。"
                 f"做法（照抄两年回放）：判 ✅▲ 的在首笔半挂一手，开盘后 {SIM_VALID} 秒内那半秒的成交均价差或立刻能成交的价比挂价好就成交，"
                 "成交价按那个更好的价算（不按挂价）；"
-                f"止盈 = 挂价往有利方向 {SIM_TP} 档，止损 = 比成交价亏 {SIM_SL} 档，成交后 {SIM_DELAY} 秒内不止损，都按当时立刻能平的价平；"
+                "止盈 = 挂价往有利方向几档、止损 = 比成交价亏几档（11-02 夜起按品种："
+                + "，".join(f"{p} {a}/{b}" for p, (a, b) in SIM_TPSL.items()) + f"，其余 {SIM_TP}/{SIM_SL}；以前的开盘也按这套重算），"
+                f"成交后 {SIM_DELAY} 秒内不止损，都按当时立刻能平的价平；"
                 "tick 只到开盘后 60 秒，到时按最后能平的价算（两年回放最多拿 300 秒）。全市场的量都算成自己的，是上限；腿2 当成和腿1 同时成交。"
                 "「档」= 最小变动价位，毛元 = 档 × 最小变动价位 × 合约乘数（不同品种一手大小差很多，元数平均主要看 sc）。"
                 f"手续费只有 {fees or '（还没填）'}，是他的成交记录算的；别的品种还没数，只算毛的（「扣费后」写 —）。"
