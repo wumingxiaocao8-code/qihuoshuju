@@ -1009,6 +1009,10 @@ def main():
         return
     if not a.test and not a.json:
         p.error("要么 --test，要么 --json（平时由 竞价判断.py 带起来）")
+    hm = datetime.now().strftime("%H:%M")
+    if a.test and ("20:56" <= hm < "21:02" or "08:56" <= hm < "09:02"):  # 11-02 夜：20:57 跑 --test，点它的 × 把正式浮层也关了
+        print("正式浮层这几分钟开着（20:56–21:02、8:56–9:02），--test 的 × 和它叠在一起，点了会把正式的也关掉：过了 21:02 / 9:02 再跑")
+        return
     try:
         run(Path(a.json) if a.json else None, a.test, a.hold, not a.no_check)
     except Exception as e:
