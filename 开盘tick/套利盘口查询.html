@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>套利盘口查询</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+  --bid: #c0392b; --ask: #1e8449; --accent: #2563eb; --warn: #b45309; --new: #fff3c4; --bad: #dc2626;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171c; --card: #1c2027; --text: #e5e7eb; --muted: #9aa3af; --line: #2c323b;
+    --bid: #f17c6e; --ask: #5fcf8a; --accent: #6ea0ff; --warn: #f0a94a; --new: #4a3f12; --bad: #f87171;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.status { color: var(--muted); margin-bottom: 12px; }
+.status.red { color: var(--bad); font-weight: bold; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+label { white-space: nowrap; }
+input[type=number] { width: 64px; padding: 3px 6px; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; }
+.products { margin-top: 10px; gap: 6px 14px; }
+.products label { color: var(--muted); }
+.products input:checked + span { color: var(--text); }
+button { font: inherit; padding: 2px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg);
+  color: var(--text); cursor: pointer; }
+.tablewrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+th { color: var(--muted); font-weight: normal; position: sticky; top: 0; background: var(--card); }
+td.l, th.l { text-align: left; }
+.bid { color: var(--bid); } .ask { color: var(--ask); }
+.v { color: var(--muted); font-size: 12px; }
+.gap { font-weight: bold; color: var(--accent); }
+.miss { color: var(--warn); }
+.stale { color: var(--muted); }
+tr.new td { background: var(--new); }
+.empty { padding: 24px; text-align: center; color: var(--muted); }
+.note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>套利盘口查询</h1>
+  <div id="status" class="status">正在连接…</div>
+
+  <div class="panel">
+    <div class="row">
+      <label>看到第 <input id="depth" type="number" min="1" max="5" step="1"> 档</label>
+      <label>卖<span class="dN">2</span> − 买<span class="dN">2</span> ≥ <input id="ticks" type="number" min="0" step="1"> 档</label>
+      <label>买一到买<span class="dN">2</span> + 卖一到卖<span class="dN">2</span> 手数合计 &lt; <input id="vol" type="number" min="1" step="1"> 手</label>
+      <label><input id="miss" type="checkbox"> 缺档的也显示</label>
+      <button id="reset">恢复默认</button>
+    </div>
+    <div id="products" class="row products"></div>
+  </div>
+
+  <div class="tablewrap"><table>
+    <thead id="head"></thead>
+    <tbody id="body"></tbody>
+  </table></div>
+  <div class="note">
+    档数 = (卖N − 买N) ÷ 最小跳动；手数合计 = 买一…买N、卖一…卖N 的挂单手数加起来。
+    「缺档」= 买N 或卖N 没人挂，算不出档数，排在最后。完全没人挂单的合约不显示。
+    更新时间是这个合约最后一次变动的时间，没夜盘的品种夜里会停在下午。
+    套利合约价 = 前一个合约 − 后一个合约。
+  </div>
+</main>
+<script>
+const DEFAULTS = { depth: 2, ticks: 4, vol: 30, miss: true, off: [] };
+const CN = "一二三四五";
+let cfg = load(), since = new Map(), first = true, last = null;  // since：每个合约这次开始符合条件的时间，新出现的高亮 5 秒
+
+function load() {
+  try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem("套利盘口查询") || "{}")); }
+  catch (e) { return Object.assign({}, DEFAULTS); }
+}
+function save() { try { localStorage.setItem("套利盘口查询", JSON.stringify(cfg)); } catch (e) {} }
+
+const $ = id => document.getElementById(id);
+function syncInputs() {
+  $("depth").value = cfg.depth; $("ticks").value = cfg.ticks; $("vol").value = cfg.vol; $("miss").checked = cfg.miss;
+  document.querySelectorAll(".dN").forEach(e => e.textContent = CN[cfg.depth - 1]);
+}
+for (const k of ["depth", "ticks", "vol"]) $(k).addEventListener("input", () => {
+  const v = Number($(k).value);
+  if ($(k).value === "" || isNaN(v)) return;
+  cfg[k] = k === "depth" ? Math.min(5, Math.max(1, Math.round(v))) : v;
+  save(); syncInputs(); render();
+});
+$("miss").addEventListener("change", () => { cfg.miss = $("miss").checked; save(); render(); });
+$("reset").addEventListener("click", () => { cfg = Object.assign({}, DEFAULTS, { off: [] }); save(); syncInputs(); buildProducts(); render(); });
+
+let productList = [];
+function buildProducts() {
+  if (!last) return;
+  const m = new Map();
+  for (const r of last.rows) m.set(r["品种"], r["名称"]);
+  productList = [...m].sort((a, b) => a[0].localeCompare(b[0]));
+  const box = $("products");
+  box.innerHTML = '<button id="all">全选</button><button id="none">全不选</button>' + productList.map(([p, n]) =>
+    `<label><input type="checkbox" data-p="${p}" ${cfg.off.includes(p) ? "" : "checked"}> <span>${n} ${p}</span></label>`).join("");
+  box.querySelectorAll("input").forEach(e => e.addEventListener("change", () => {
+    cfg.off = [...box.querySelectorAll("input:not(:checked)")].map(x => x.dataset.p); save(); render();
+  }));
+  $("all").onclick = () => { cfg.off = []; save(); buildProducts(); render(); };
+  $("none").onclick = () => { cfg.off = productList.map(x => x[0]); save(); buildProducts(); render(); };
+}
+
+// 和 套利盘口查询.py 的 judge() 同一套规则，改的话两边一起改
+function judge(r) {
+  const d = cfg.depth;
+  let total = 0;
+  for (let i = 0; i < d; i++) total += r["买"][i][1] + r["卖"][i][1];
+  if (r["买"][0][0] === null && r["卖"][0][0] === null) return null;
+  const gap = gapAt(r, d);
+  if (gap === null && !cfg.miss) return null;
+  if (gap !== null && gap < cfg.ticks) return null;
+  if (total >= cfg.vol) return null;
+  return { gap, total };
+}
+
+const fmt = x => x === null ? "" : (Math.round(x * 1000) / 1000).toString();
+function gapAt(r, n) {  // 卖n − 买n 隔几档，有一边没人挂就是 null
+  const b = r["买"][n - 1][0], a = r["卖"][n - 1][0];
+  return (b !== null && a !== null && r["跳"]) ? Math.round((a - b) / r["跳"]) : null;
+}
+function cell(pv, cls) {
+  return pv[0] === null ? '<td class="v">—</td>' : `<td class="${cls}">${fmt(pv[0])} <span class="v">×${pv[1]}</span></td>`;
+}
+
+function render() {
+  if (!last) return;
+  const d = cfg.depth;
+  let h = '<tr><th class="l">套利合约</th><th class="l">品种</th><th>卖一 − 买一</th>';
+  if (d > 1) h += `<th>卖${CN[d - 1]} − 买${CN[d - 1]}</th>`;
+  for (let i = d; i >= 1; i--) h += `<th>买${CN[i - 1]}</th>`;
+  for (let i = 1; i <= d; i++) h += `<th>卖${CN[i - 1]}</th>`;
+  h += '<th>手数合计</th><th>更新时间</th></tr>';
+  $("head").innerHTML = h;
+
+  const hits = [];
+  for (const r of last.rows) {
+    if (cfg.off.includes(r["品种"])) continue;
+    const j = judge(r);
+    if (j) hits.push(Object.assign({ r }, j));
+  }
+  hits.sort((x, y) => (x.gap === null) - (y.gap === null) || (y.gap || 0) - (x.gap || 0) || x.total - y.total);
+
+  const t = Date.now(), keep = new Map();
+  for (const x of hits) keep.set(x.r["合约"], since.get(x.r["合约"]) ?? (first ? 0 : t));
+  since = keep;
+  $("body").innerHTML = hits.length ? hits.map(({ r, gap, total }) => {
+    let tr = `<tr data-s="${r["合约"]}" class="${t - since.get(r["合约"]) < 5000 ? "new" : ""}">`;
+    tr += `<td class="l">${r["合约"].split(" ")[1]} <span class="v">${r["交易所"]}</span></td><td class="l">${r["名称"]}</td>`;
+    const g1 = gapAt(r, 1), show = g => g === null ? "缺档" : `${g} 档`;
+    tr += `<td class="${d === 1 ? (g1 === null ? "miss" : "gap") : (g1 === null ? "miss" : "")}">${show(g1)}</td>`;
+    if (d > 1) tr += `<td class="${gap === null ? "miss" : "gap"}">${show(gap)}</td>`;
+    for (let i = d; i >= 1; i--) tr += cell(r["买"][i - 1], "bid");
+    for (let i = 1; i <= d; i++) tr += cell(r["卖"][i - 1], "ask");
+    tr += `<td>${total}</td><td class="stale">${r["时间"]}</td></tr>`;
+    return tr;
+  }).join("") : `<tr><td class="empty" colspan="${5 + (d > 1) + 2 * d}">现在没有符合条件的套利合约</td></tr>`;
+  if (last.rows.length) first = false;  // 刚启动还没订阅完时是空表，不能把之后整张表都当成新出现
+
+  const s = $("status");
+  s.className = "status" + (last["红"] ? " red" : "");
+  s.textContent = `${last["状态"] === "正常" ? "" : last["状态"] + "　"}共 ${last.rows.length} 个套利合约，符合 ${hits.length} 个　数据刷新 ${last["更新"] || "—"}`;
+}
+
+async function tick() {
+  try {
+    const res = await fetch("/data", { cache: "no-store" });
+    const data = await res.json();
+    const newProducts = !last || data.rows.length !== last.rows.length;
+    last = data;
+    if (newProducts) buildProducts();
+    render();
+  } catch (e) {
+    const s = $("status");
+    s.className = "status red";
+    s.textContent = "断开了：查询程序没在运行（双击「套利盘口查询.bat」重新打开）";
+  }
+}
+syncInputs();
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
