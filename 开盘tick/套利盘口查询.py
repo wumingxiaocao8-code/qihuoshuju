@@ -5,6 +5,9 @@
 筛选在网页上改（看到第几档、卖N − 买N 至少几档、挂单手数合计少于几手、品种），改了立刻生效，浏览器会记住。
 关掉黑窗口就停了。
 
+只要 Python 3.8+ 和 tqsdk（pip install tqsdk），不依赖本文件夹别的脚本，可以单独拷给别人。
+账号：读 ~/.tqsdk_auth.json，格式 {"user": "快期账户", "password": "密码"}；没有这个文件时会生成一个空的让你填。
+
 用法（在本文件夹里）：
   python 套利盘口查询.py                 开网页
   python 套利盘口查询.py --once          不开网页，按默认规则打印一次（--depth 2 --ticks 4 --vol 30 可改）
@@ -17,13 +20,24 @@ import time
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import site
+import sys
 from pathlib import Path
 
-import 开盘tick as tick  # 账号、天勤、venv 包路径都用它的
+# 这台电脑的 venv 里 python.exe 被 Windows 智能应用控制拦了，用原版 Python 跑，从这里加载装好的包；别的电脑没有这个文件夹就跳过
+VENV_SITE = Path.home() / ".venvs" / "vault" / "Lib" / "site-packages"
+if VENV_SITE.exists():
+    site.addsitedir(str(VENV_SITE))
+
+try:
+    from tqsdk import TqApi, TqAuth
+except ImportError:
+    sys.exit("没装天勤：先在命令行运行  pip install tqsdk")
 
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "套利盘口查询.html"
 PORT = 8765
+AUTH_FILE = Path.home() / ".tqsdk_auth.json"
 EXCHANGES = ("SHFE", "INE")
 RELIST_SEC = 30 * 60  # 每 30 分钟重查一次合约列表，交易所加了新套利合约能自动带上
 NAMES = {"cu": "铜", "bc": "国际铜", "al": "铝", "zn": "锌", "pb": "铅", "ni": "镍", "sn": "锡", "ao": "氧化铝",
@@ -71,6 +85,17 @@ def judge(r: dict, depth: int, ticks: float, vol: float):
     return (gap is None or gap >= ticks) and total < vol, gap, total
 
 
+def load_auth() -> TqAuth:
+    if not AUTH_FILE.exists():
+        AUTH_FILE.write_text(json.dumps({"user": "在这里填快期账户", "password": "在这里填密码"}, ensure_ascii=False),
+                             encoding="utf-8")
+        sys.exit(f"第一次用：已生成 {AUTH_FILE}，用记事本打开，填上快期（天勤）账户和密码，保存后再运行")
+    a = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+    if a.get("user", "").startswith("在这里"):
+        sys.exit(f"先用记事本打开 {AUTH_FILE}，把快期（天勤）账户和密码填进去")
+    return TqAuth(a["user"], a["password"])
+
+
 def list_combos(api) -> list:
     out = []
     for ex in EXCHANGES:
@@ -78,14 +103,18 @@ def list_combos(api) -> list:
     return sorted(out)
 
 
-def connect():
+def connect(tries: int = 0):
+    """连不上就重试；tries=0 一直重试。"""
+    auth = load_auth()  # 账号文件有问题直接退出，不重试
     n = 0
     while True:
         n += 1
         try:
-            return tick.TqApi(auth=tick.load_auth(), disable_print=True)
+            return TqApi(auth=auth, disable_print=True)  # 不打印天勤自带的模拟账户信息
         except Exception as e:
             print(f"第 {n} 次连天勤失败：{type(e).__name__} {e}")
+            if n == tries:
+                sys.exit("连不上天勤，检查网络和账号密码")
             with lock:
                 state.update({"状态": f"连不上天勤，重试中（第 {n} 次）", "红": True})
             time.sleep(min(60, 5 * n))
@@ -156,7 +185,7 @@ def serve(browser: bool = True):
 
 
 def once(depth: int, ticks: float, vol: float):
-    api = tick.connect()
+    api = connect(3)
     try:
         syms = list_combos(api)
         quotes = dict(zip(syms, api.get_quote_list(syms)))

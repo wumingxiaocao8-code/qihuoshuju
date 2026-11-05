@@ -192,25 +192,32 @@ def save_ticks(items: list[str], seconds: int, out: Path) -> None:
         for ex in {s.split(".")[0] for s in symbols}:
             valid |= set(api.query_quotes(ins_class="FUTURE", exchange_id=ex, expired=False))
         for s in symbols:
-            if s in valid:
-                data[s] = fetch(api, s)
-            else:
+            if s not in valid:
                 print(f"{s}: 交易所没有这个合约（写错了或已到期），跳过。请改「合约.txt」")
+                continue
+            try:
+                df = fetch(api, s)
+            except Exception as e:
+                print(f"{s}: tick 没取到（{type(e).__name__} {e}），跳过该合约及相关价差，继续取其他合约")
+                continue
+            data[s] = df
+            # 成功一条就保存一条，后面的合约超时也不会丢掉已取回的数据。
+            wins = opening_windows(df, seconds)
+            if not wins:
+                print(f"{s}: 往回能取到的这段（{df.index.min():%m-%d %H:%M} 起）里没有开盘")
+            for open_ts, w, whole in wins:
+                note = "" if whole else "，⚠ 不完整：往回取不够，缺了开盘前一段"
+                print(f"{s} {open_ts:%m-%d %H:%M} 开盘：{save(w, out / f'{open_ts:%Y-%m-%d_%H%M}' / f'{s}.csv')}{note}")
         for s in data:  # 昨收价从 1 分钟线取（tick 只能往回 80 分钟，1 分钟线能往回两三周，旧文件夹也补得上）
             try:
                 info[s] = (minute_klines(api, s), contract_info(api, s))
             except Exception as e:
                 print(f"{s}: 1 分钟线没取到（{type(e).__name__} {e}），这次不存昨收价")
     finally:
-        api.close()
-
-    for s, df in data.items():
-        wins = opening_windows(df, seconds)
-        if not wins:
-            print(f"{s}: 往回能取到的这段（{df.index.min():%m-%d %H:%M} 起）里没有开盘")
-        for open_ts, w, whole in wins:
-            note = "" if whole else "，⚠ 不完整：往回取不够，缺了开盘前一段"
-            print(f"{s} {open_ts:%m-%d %H:%M} 开盘：{save(w, out / f'{open_ts:%Y-%m-%d_%H%M}' / f'{s}.csv')}{note}")
+        try:
+            api.close()
+        except Exception as e:
+            print(f"断开天勤出错（{type(e).__name__} {e}），继续保存已取到的价差和收盘价")
 
     for s1, s2 in pairs:  # 价差：两腿按 0.5 秒对齐
         if s1 not in data or s2 not in data:

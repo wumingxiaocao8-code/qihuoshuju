@@ -82,13 +82,14 @@ def main():
     api = tk.connect()
     try:
         k = {c: tk.minute_klines(api, cf.symbol(c)) for c in legs}
+        calendar = cf.minute_calendar(api, k)
     finally:
         api.close()
     now = datetime.now()
     lines, notes, span = [], [], ""
     for pos, cb in cells:
         a, b = cb.split("-")
-        r = stats(cf.spread_minutes(k[a], k[b]))
+        r = stats(cf.spread_minutes(k[a], k[b], calendar))
         if not r:
             lines.append(f"| {pos} | {cb} | 没有分钟数据 |  |  |  |  |  |  |  |")
             continue

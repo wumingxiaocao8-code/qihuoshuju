@@ -72,7 +72,11 @@ REC_COLS = ["开盘", "场次", "星期", "组合", "品种", "腿1", "腿2", "�
             "周一早盘", "节后", "换月期", "腿1离到期天数", "备注", "v1判断", "立刻能卖", "立刻能买",
             "重仓标记", "模拟成交", "模拟挂价", "模拟成交价差", "模拟成交秒", "模拟出场价差", "模拟出场", "模拟档数",
             "模拟每手毛元", "模拟手续费", "模拟每手净元", "远档", "远档挂价", "远档成交", "远档成交价差", "远档成交秒", "远档出场价差",
-            "远档出场", "远档档数", "远档每手毛元", "远档每手净元"]
+            "远档出场", "远档档数", "远档每手毛元", "远档每手净元", "实盘首笔半", "实盘远档",
+            "一下成交", "一下腿1价", "一下成交秒", "一下成交价差", "一下出场价差", "一下出场", "一下档数", "一下每手毛元", "一下每手净元",
+            "排队成交", "排队腿1价", "排队成交秒", "排队成交价差", "排队出场价差", "排队出场", "排队档数", "排队每手毛元", "排队每手净元",
+            "程序成交", "程序来源", "程序腿1价", "程序成交秒", "程序成交价差", "程序出场价差", "程序出场", "程序档数", "程序每手毛元", "程序每手净元",
+            "程序半成交", "程序半腿1价", "程序半成交秒", "程序半成交价差", "程序半出场价差", "程序半出场", "程序半档数", "程序半每手毛元", "程序半每手净元"]
 PCT_COLS = ["主力跳空%", "腿1跳空%"]  # 只在程序里用（记分卡、涨跌幅统计），不写进表格
 HIDDEN_COLS = PCT_COLS + ["预估下沿", "预估上沿", "主力在范围内", "首笔下沿", "首笔上沿"]  # 只在程序里用
 # 写进表格的列和顺序（小草定的）：针变化只在程序里用（针方向、记分卡），不写进表格
@@ -214,6 +218,23 @@ def read_ticks(f: Path):
         return None
     df["时间"] = pd.to_datetime(df["时间"])
     return df.set_index("时间").sort_index()
+
+
+def auction_snapshot(leg, open_ts):
+    """竞价窗口的成交合计与最新盘口；仅更新盘口的末张不会抹掉此前成交。"""
+    if leg is None:
+        return None
+    o = pd.Timestamp(open_ts)
+    w = leg[(leg.index >= o - pd.Timedelta(seconds=60)) & (leg.index < o)].sort_index()
+    if w.empty:
+        return None
+    r = w.iloc[-1].copy()
+    traded = w[w["成交手数"] > 0]
+    r["最新价"] = traded["最新价"].iloc[-1] if len(traded) else float("nan")
+    r["成交手数"] = w["成交手数"].clip(lower=0).sum(min_count=1)
+    # 缺了任何一张持仓增量时，不能把已知部分当成完整竞价持仓变化。
+    r["持仓变化"] = w["持仓变化"].sum(min_count=len(w)) if "持仓变化" in w else float("nan")
+    return r
 
 
 # ---------- 系数（开盘预估.py 用） ----------
@@ -358,8 +379,8 @@ def analyze(folder: Path, open_ts: datetime, s1: str, s2: str, closes: dict, fc)
     o = pd.Timestamp(open_ts)
 
     def auction(leg):
-        pre = leg[(leg.index < o) & (leg["成交手数"] > 0)] if leg is not None else []
-        return pre.iloc[-1] if len(pre) else None
+        r = auction_snapshot(leg, o)
+        return r if r is not None and (num(r["成交手数"]) or 0) > 0 else None
 
     a1, a2 = auction(l1), auction(l2)
     if a1 is not None:
@@ -490,8 +511,8 @@ def simulate(spread: pd.DataFrame, open_ts, L: float, s: int, tick: float, p: st
     成交价按那半秒立刻能成交的价（先看）或成交均价差，比挂价好就按好的算；出场见 SIM_*。"""
     o = pd.Timestamp(open_ts)
     sec = (spread.index - o).total_seconds()
-    d = spread[sec > 0]
-    t = sec[sec > 0]
+    d = spread[sec >= 0]
+    t = sec[sec >= 0]
     entry, leave = (d["卖价差"], d["买价差"]) if s > 0 else (d["买价差"], d["卖价差"])
     fill = None
     for ti, book, avg in zip(t, entry, d["均价价差"]):
@@ -502,11 +523,17 @@ def simulate(spread: pd.DataFrame, open_ts, L: float, s: int, tick: float, p: st
             fill = (ti, c[0])
             break
     out = {"模拟挂价": L}
-    tp, sl = SIM_TPSL.get(p, (SIM_TP, SIM_SL))
     if fill is None:
         return out | {"模拟成交": "否"}
     tf, F = fill
     out |= {"模拟成交": "是", "模拟成交秒": round(tf, 1), "模拟成交价差": round(F, 4)}
+    return out | sim_exit(t, leave, tf, F, L, s, tick, p)
+
+
+def sim_exit(t, leave, tf, F, L: float, s: int, tick: float, p: str) -> dict:
+    """成交后的出场（simulate 和排队版共用）：t 是开盘后秒数，leave 是同一时间的能平价差。"""
+    out = {}
+    tp, sl = SIM_TPSL.get(p, (SIM_TP, SIM_SL))
     side, tgt, last, how = -s, L - s * tp * tick, None, ""
     for ti, px in zip(t, leave):
         px = num(px)
@@ -532,6 +559,51 @@ def simulate(spread: pd.DataFrame, open_ts, L: float, s: int, tick: float, p: st
     return out
 
 
+def simulate_queue(folder: Path, spread: pd.DataFrame, open_ts, s1: str, s2: str, L: float, s: int, tick: float, p: str) -> dict:
+    """排队版（11-05 加，见 成交模型.py）：腿1 按 L + 腿2 参考价挂着排队，腿2 按下一张快照的对手价追。两套：
+    「一下」= 只接开盘撮合那一下（第一张快照，挂价在撮合停下的地方以内才接到，按腿1 那半秒均价）；
+    「排队」= 5 秒内腿1 盘口越过挂价才算轮到、按挂价成交。出场同 simulate，但止盈从真实成交价算（腿2 追得差时成交价会比挂价差）。
+    腿1 挂价 = 首笔半 + 腿2 竞价后那张快照的对手价（卖价差看腿2 卖一）：11-05 老陆的委托单 13 单都是这么算的，先下的都是腿1。
+    「程序」（11-05 晚加）= 照委托单看到的程序做法：开盘那一下接到的按「一下」算；没接到的撤单、1 秒后按腿2 新对手价重挂（跟价），只算 1 秒以后的成交。"""
+    import 成交模型 as qm
+    legs = [read_ticks(folder / f"{x}.csv") for x in (s1, s2)]
+    if any(g is None for g in legs):
+        return {}
+    o = pd.Timestamp(open_ts)
+    full = legs[0].index.union(legs[1].index)
+    idx = full[full >= o]
+    a, b = (g[~g.index.duplicated(keep="last")].reindex(full).ffill().loc[idx] for g in legs)
+    vw = [g[~g.index.duplicated(keep="last")]["均价"].reindex(idx) for g in legs]  # 这半秒成交均价，没成交是空
+    sec = (idx - o).total_seconds()
+    books = list(zip(sec, a["买一价"], a["卖一价"], b["买一价"], b["卖一价"], vw[0], vw[1]))
+    pre2 = legs[1][legs[1].index < o]
+    if not len(pre2):
+        return {}
+    ref = num(pre2["卖一价"].iloc[-1] if s > 0 else pre2["买一价"].iloc[-1])  # 腿2 竞价后那张的对手价（老陆 11-05 委托：13 单都对得上）
+    d = spread[(spread.index - o).total_seconds() >= 0]
+    t = (d.index - o).total_seconds()
+    leave = d["买价差"] if s > 0 else d["卖价差"]
+    out = {}
+    first_fill = qm.queue_fill(books, s, L, ref, tick, valid=SIM_VALID, first_only=True)
+    # 没接到：撤单、1 秒起重挂，只看到 2.5 秒（两年回放的腿盘口只有 0.5、1…3、4、5 秒，3 秒以后不连续，记分卡跟回放一样只看到 2.5 秒）
+    repeg = None if first_fill else qm.queue_fill(books, s, L, ref, tick, valid=2.5, follow=True, start=0.5)
+    # 程序半 = 开盘那一下的正滑只拿一半（11-05 委托 12 单实际约六成；按半秒均价算偏乐观）
+    first_half = qm.queue_fill(books, s, L, ref, tick, valid=SIM_VALID, first_only=True, first_px="half")
+    for pre, fill in (("一下", first_fill), ("排队", qm.queue_fill(books, s, L, ref, tick, valid=SIM_VALID)), ("程序", first_fill or repeg),
+                      ("程序半", first_half or repeg)):
+        if pre == "程序":
+            out["程序来源"] = "开盘那一下" if first_fill else ("重挂" if repeg else "")
+        if fill is None:
+            out[pre + "成交"] = "否"
+            continue
+        out |= {pre + "成交": "是", pre + "腿1价": fill["腿1价"], pre + "成交秒": round(fill["成交秒"], 1),
+                pre + "成交价差": round(fill["成交价差"], 4)}
+        F = fill["成交价差"]
+        ex = sim_exit(t, leave, fill["成交秒"], F, F, s, tick, p)
+        out |= {pre + k[2:]: v for k, v in ex.items() if k != "模拟手续费"}
+    return out
+
+
 def sim_cols(folder: Path, open_ts, s1: str, s2: str, rec: dict, tick) -> dict:
     """判 ✅▲ 的照标签模拟一手（模拟成交 是 / 否 / 没有首笔半）；判 ❌ 的也假设照做一次（模拟成交 写「❌假设…」），
     给记分卡数「错过的」和「❌ 省下的」。第 1 步判的 ❌ 没有猜首笔，按混合版用立刻能成交那边补一个。"""
@@ -552,6 +624,7 @@ def sim_cols(folder: Path, open_ts, s1: str, s2: str, rec: dict, tick) -> dict:
     if spread is None:
         return {}
     out = simulate(spread, open_ts, round(round(half / tick) * tick, 6), s, tick, p)
+    out |= simulate_queue(folder, spread, open_ts, s1, s2, round(round(half / tick) * tick, 6), s, tick, p)
     far = num(rec.get("远档"))
     if far is not None and k != "假":  # 远档（11-02 夜加）：同样模拟一手，记分卡拿来比「首笔半 + 远档」两层和只挂首笔半
         f = simulate(spread, open_ts, round(round(far / tick) * tick, 6), s, tick, p)
@@ -811,16 +884,45 @@ def versus_v1(s: pd.DataFrame, mixed) -> str:
                     rows))
 
 
-def sim_stats(g: pd.DataFrame) -> dict:
-    """一组模拟（模拟成交 = 是 / ❌假设成交 的算成交）：次数、胜率、每次平均档数、毛元、扣费后元。"""
-    f = g[g["模拟成交"].isin(["是", "❌假设成交"])]
-    x = pd.to_numeric(f["模拟档数"], errors="coerce").dropna()
-    gross = pd.to_numeric(f["模拟每手毛元"], errors="coerce").dropna()
-    net = pd.to_numeric(f["模拟每手净元"], errors="coerce").dropna()
+def sim_stats(g: pd.DataFrame, pre: str = "模拟") -> dict:
+    """一组模拟（模拟成交 = 是 / ❌假设成交 的算成交）：次数、胜率、每次平均档数、毛元、扣费后元。pre 换成「一下」「排队」看排队版。"""
+    f = g[g[pre + "成交"].isin(["是", "❌假设成交"])]
+    x = pd.to_numeric(f[pre + "档数"], errors="coerce").dropna()
+    gross = pd.to_numeric(f[pre + "每手毛元"], errors="coerce").dropna()
+    net = pd.to_numeric(f[pre + "每手净元"], errors="coerce").dropna()
     return {"成交": len(x), "赢": int((x > 0).sum()), "胜率": f"{(x > 0).mean() * 100:.0f}%" if len(x) else "",
             "平均档": fmt(x.mean(), 1, plus=True) if len(x) else "", "合计档": fmt(x.sum(), 0, plus=True) if len(x) else "",
             "平均毛元": fmt(gross.mean(), 0, plus=True) if len(gross) else "",
             "平均净元": f"{fmt(net.mean(), 0, plus=True)}（{len(net)} 次）" if len(net) else "—"}
+
+
+def queue_table(s: pd.DataFrame) -> str:
+    """11-05 加：判 ✅▲ 的三种成交算法并排（上限 = 上面那套；一下、排队见 成交模型.py）。"""
+    if "一下成交" not in s or not s["一下成交"].isin(["是", "否"]).any():
+        return ""
+    rows = []
+    for lab, g in [("全部", s)] + sorted(s.groupby("品种"), key=lambda kv: kv[0]):
+        cells = []
+        for pre in ("模拟", "一下", "程序", "程序半"):
+            if pre + "成交" not in g:
+                cells += ["", "", "", ""]
+                continue
+            st = sim_stats(g, pre)
+            cells += [st["成交"], colored(st["平均档"], 1) if st["平均档"] else "", st["合计档"], st["平均净元"]]
+        rows.append([lab, len(g)] + cells + [small(g["开盘"].nunique())])
+    return ("<h4>成交算法：上限 vs 一下 vs 程序版（判 ✅▲ 的，每次一手）</h4>"
+            "<p class='note'>上限 = 上面那套（那半秒均价差比挂价好就算成交、按均价，等于永远排第一）。"
+            "排队版照他们程序：腿1 按 首笔半 + 腿2 竞价后对手价 换算成限价，成交后腿2 按下一张快照的对手价追（偏保守：老陆实际多半按竞价后的价就追到了），止盈从真实成交价算。"
+            "「一下」= 只接开盘那一下：第一张快照腿1 撮合停下的地方没越过挂价才算接到，按腿1 那半秒均价；"
+            "「程序版」= 照 11-05 老陆和同事委托单看到的程序做法：开盘那一下接到的按「一下」算，没接到的撤单、1 秒后按腿2 新对手价重挂，算之后的成交。"
+            "「程序版·正滑一半」= 同程序版，但开盘那一下的正滑只拿一半：11-05 委托 12 单开盘那一秒的成交，真实正滑合计约是半秒均价算的六成，针越大拿到的越少（4–50%）。"
+            "11-05 夜审查后重算（成交要有证据、腿2 按 0.5 秒后那张追）：两年回放（现在的挂法，每次一手，扣费）上限 +118 万、程序版 +24 万、程序版·正滑一半 −15 万、正滑全不给 −54 万。"
+            "也就是说赚不赚钱几乎全看开盘那一下能拿到多少正滑，挂多远的结论也跟着变（分析/2026-11-05/排队回测/小结.md 第九节）。"
+            "11-05 委托对过 22 单：成交价偏乐观（bu2702 差 35 档），也常常只成一部分。"
+            "（不改价排队那一版亏得多，但程序会跟价重挂，那种情况不会发生，csv 里留着「排队*」列，网页不显示。）</p>"
+            + table(["品种", "判 ✅▲", "上限 成交", "上限 平均档", "上限 合计档", "上限 扣费后元", "一下 成交", "一下 平均档", "一下 合计档",
+                     "一下 扣费后元", "程序版 成交", "程序版 平均档", "程序版 合计档", "程序版 扣费后元",
+                     "正滑一半 成交", "正滑一半 平均档", "正滑一半 合计档", "正滑一半 扣费后元", "样本"], rows))
 
 
 def two_tier(s: pd.DataFrame) -> str:
@@ -832,22 +934,24 @@ def two_tier(s: pd.DataFrame) -> str:
         return ""
     def per(g, pre, col):
         v = pd.to_numeric(g[pre + col], errors="coerce")
-        return v.where(g[pre + "成交"] == "是", 0).fillna(0)
+        # 只有明确没成交才是零收益；成交后缺出场价或手续费时仍是未知。
+        return v.where(g[pre + "成交"] == "是").mask(g[pre + "成交"] == "否", 0)
+    def total(v, dig):
+        return "—（有缺失）" if v.isna().any() else fmt(v.sum(), dig, plus=True)
     rows = []
     for lab, g in [("全部", s)] + sorted(s.groupby("品种"), key=lambda kv: kv[0]):
         n1 = g["品种"].map(lambda p: jd.FAR[p][1]); n2 = g["品种"].map(lambda p: jd.FAR[p][2])
         cells = []
         for col, dig in (("档数", 0), ("每手毛元", 0), ("每手净元", 0)):
             a, b = per(g, "模拟", col), per(g, "远档", col)
-            if col == "每手净元" and pd.to_numeric(g["模拟每手净元"], errors="coerce").isna().all():
-                cells += ["—", "—"]; continue
-            cells += [fmt((10 * a).sum(), dig, plus=True), fmt((n1 * a + n2 * b).sum(), dig, plus=True)]
+            cells += [total(10 * a, dig), total(n1 * a + n2 * b, dig)]
         hit = lambda pre: int((g[pre + "成交"] == "是").sum())
         rows.append([lab, len(g), hit("模拟"), hit("远档")] + cells + [small(g["开盘"].nunique())])
     farn = "，".join(f"{p} {k:g}（{a}+{b}）" for p, (k, a, b) in jd.FAR.items())
     return ("<h4>两层挂单 vs 只挂首笔半（每组 10 手，判 ✅▲ 的）</h4>"
             f"<p class='note'>两层 = 首笔半 n1 手 + 远档 n2 手（远档 = 昨收价差 + 系数 ×（猜首笔 − 昨收价差），{farn}；11-02 夜定）。"
-            "每档各模拟一手、没成交算 0，再乘手数；两年回放两层更好，这里看以后真实的开盘是不是也这样。</p>"
+            "每档各模拟一手、明确没成交算 0，再乘手数；已成交但收益或手续费未知时，合计显示有缺失。"
+            "历史开盘也按当前参数重算，不代表当时实盘挂单。</p>"
             + table(["品种", "判 ✅▲", "首笔半成交", "远档成交", "只挂首笔半 档", "两层 档", "只挂首笔半 毛元", "两层 毛元",
                      "只挂首笔半 扣费后元", "两层 扣费后元", "样本"], rows))
 
@@ -867,7 +971,9 @@ def rule_money(rec: pd.DataFrame) -> str:
             rows.append([dim, lab, len(g), st["成交"], int((g["模拟成交"] == "否").sum()), int((g["模拟成交"] == "没有首笔半").sum()),
                          st["赢"], st["胜率"], colored(st["平均档"], 1) if st["平均档"] else "", st["合计档"], st["平均毛元"],
                          st["平均净元"], g["开盘"].nunique(), small(g["开盘"].nunique())])
-    out = table(["看", "分组", "判 ✅▲", "成交", "没成交", "没有首笔半", "赢", "胜率", "每次平均档", "合计档", "每次平均毛元",
+    out = ("<p class='note'>模拟使用当前首笔半、远档及止盈止损参数，历史开盘也重算；判断来源为实盘只表示符号来自当时记录。"
+           "当时保存的点位另见 CSV / Excel 中的「实盘首笔半」「实盘远档」，没有保存的留空。</p>")
+    out += table(["看", "分组", "判 ✅▲", "成交", "没成交", "没有首笔半", "赢", "胜率", "每次平均档", "合计档", "每次平均毛元",
                  "扣费后每次平均元", "涉及开盘", "样本"], rows)
     # 判 ❌ 的：实际开到了（真 / 半真）= 错过的；实际假 / 反向 = 判对了，假设照做会怎样
     x = rec[rec["59分判断"] == "假"]
@@ -887,15 +993,22 @@ def rule_money(rec: pd.DataFrame) -> str:
                        r["模拟出场"] if isinstance(r["模拟出场"], str) else ("没成交" if r["模拟成交"] == "❌假设没成交" else ""),
                        colored(r["模拟档数"], 1), fmt(r["模拟每手毛元"], 0, plus=True)]
                       for _, r in miss.sort_values("开盘", ascending=False).iterrows()])
+    out += queue_table(s)
     out += two_tier(s)
     last = s[s["开盘"] == rec["开盘"].max()]
     if len(last):
         out += (f"<h4>最近一次开盘（{esc(rec['开盘'].max())}）判 ✅▲ 的</h4>"
-                + table(["组合", "判", "重仓标记", "挂价（首笔半）", "成交", "成交秒", "成交价差", "出场", "出场价差", "档数", "毛元", "扣费后元"],
+                + table(["组合", "判", "重仓标记", "挂价（首笔半）", "成交", "成交秒", "成交价差", "出场", "出场价差", "档数", "毛元", "扣费后元",
+                         "一下 成交价差", "一下 档数", "程序版 成交价差", "程序版 档数"],
                         [[r["组合"], r["符号"], r["重仓标记"] if isinstance(r["重仓标记"], str) else "", fmt(r["模拟挂价"], 4),
                           r["模拟成交"], fmt(r["模拟成交秒"], 1), fmt(r["模拟成交价差"], 4),
                           r["模拟出场"] if isinstance(r["模拟出场"], str) else "", fmt(r["模拟出场价差"], 4),
-                          colored(r["模拟档数"], 1), fmt(r["模拟每手毛元"], 0, plus=True), fmt(r["模拟每手净元"], 0, plus=True)]
+                          colored(r["模拟档数"], 1), fmt(r["模拟每手毛元"], 0, plus=True), fmt(r["模拟每手净元"], 0, plus=True),
+                          fmt(r["一下成交价差"], 4) if r["一下成交"] == "是" else (r["一下成交"] if isinstance(r["一下成交"], str) else ""),
+                          colored(r["一下档数"], 1),
+                          (fmt(r["程序成交价差"], 4) + ("（重挂）" if r["程序来源"] == "重挂" else "")) if r["程序成交"] == "是"
+                          else (r["程序成交"] if isinstance(r["程序成交"], str) else ""),
+                          colored(r["程序档数"], 1)]
                          for _, r in last.iterrows()]))
     return out
 

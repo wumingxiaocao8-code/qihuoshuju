@@ -557,15 +557,12 @@ def when(x):
 
 
 def snap_from_ticks(df, o: datetime) -> dict | None:
-    """回放：tick 文件里竞价那张快照（开盘前一分钟里最后一张）。开盘tick.py 存的 成交手数、持仓变化 已经是跟上一张比的。"""
-    if df is None:
+    """回放：竞价窗口累计成交与最新盘口（成交手数、持仓变化在 tick 中是增量）。"""
+    r = rv.auction_snapshot(df, o)
+    if r is None:
         return None
-    w = df[(df.index >= pd.Timestamp(o - AUCTION)) & (df.index < pd.Timestamp(o))]
-    if not len(w):
-        return None
-    r = w.iloc[-1]
     vol = num(r.get("成交手数")) or 0
-    return {"时间": w.index[-1].to_pydatetime(), "竞价价": num(r["最新价"]) if vol > 0 else None, "竞价手数": vol,
+    return {"时间": r.name.to_pydatetime(), "竞价价": num(r["最新价"]) if vol > 0 else None, "竞价手数": vol,
             "持仓": num(r.get("持仓量")), "持仓变化": num(r.get("持仓变化")), "买一": num(r.get("买一价")),
             "卖一": num(r.get("卖一价")), "买一量": num(r.get("买一量")), "卖一量": num(r.get("卖一量")),
             **{f"{w}{k}{x}": num(r.get(f"{w}{c}{x}")) for k, c in LEVELS for w in ("买", "卖") for x in ("价", "量")}}
@@ -832,7 +829,7 @@ def half_of(prod) -> float:
 def review_cols(j: dict, first, prod=None) -> dict:
     """开盘复盘.csv 里加的几列：59分判断、判断得分、托住几成、预计首笔区间、首笔在区间里、判断来源、
     v1判断（混合版之前的实盘没有这一列，就是 59分判断）、立刻能卖、立刻能买（以后拟合首笔区间用）、
-    猜首笔、首笔半（和竞价判断网页、浮层上的一样：首笔半 = 昨收价差 + HALF ×（猜首笔 − 昨收价差），ag、sn、ni 按 HALF_BY）；首笔上下沿不写进表格。"""
+    猜首笔、首笔半、远档按当前参数重算（含历史开盘）；实盘首笔半、实盘远档单列原始保存值，不补算。"""
     lo, hi = num(j.get("首笔下沿")), num(j.get("首笔上沿"))
     v1 = j.get("v1档")
     guess, base = num(j.get("猜首笔")), num(j.get("昨收价差"))
@@ -842,7 +839,9 @@ def review_cols(j: dict, first, prod=None) -> dict:
            "判断来源": j.get("来源", ""), "首笔下沿": lo, "首笔上沿": hi,
            "v1判断": v1 if isinstance(v1, str) and v1 else j.get("档", ""),
            "立刻能卖": num(j.get("立刻能卖")), "立刻能买": num(j.get("立刻能买")),
-           "猜首笔": guess, "首笔半": half, "远档": far}
+           "猜首笔": guess, "首笔半": half, "远档": far,
+           "实盘首笔半": num(j.get("首笔半")) if j.get("来源") == "实盘" else None,
+           "实盘远档": num(j.get("远档")) if j.get("来源") == "实盘" else None}
     if lo is not None and hi is not None:
         out["预计首笔区间"] = f"{rv.fmt(lo, 4)} ~ {rv.fmt(hi, 4)}"
         f = num(first)

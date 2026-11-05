@@ -25,7 +25,7 @@
 四、盈亏：按价差算，(平仓价差 − 开仓价差) × 手数 × 乘数，多开为正、空开反过来，净盈亏 = 价差盈亏 − 手续费。
   不用逐笔：交易所按单个合约记账，程序先平昨仓时，一条腿会平到别的组合的老仓（10-28 B 号 au2612 平到和 au2708 配的那手），
   逐笔就把老仓攒的盈亏算进了这一组。逐笔放在旁边当参考，和价差差得多会标出来。
-五、价差账本：每个号从最早的配对结果往后滚，每天没平的组合记下来带到第二天；第二天「期初仓位平仓」先开先平地对上账本，
+五、价差账本：每个号从最早的配对结果往后滚（配对明细/账本调整.json 可以手动拿掉缺记录、不知道哪天平的仓），每天没平的组合记下来带到第二天；第二天「期初仓位平仓」先开先平地对上账本，
   就知道开在多少。账本里最早那天以前开的仓不知道开仓价，显示空的。每天收盘后的账本存成 配对明细/日期_账号X_账本.json。
   没平的组合按结算价（天勤取；拿不到结算价的那天用收盘价）算浮动盈亏。
   今天大约赚亏 = 今天平掉的 + 手上持仓，从昨天结算（今天开的从开仓价差）到今天结算的价差变化 × 乘数，再减今天全部手续费；
@@ -242,14 +242,31 @@ def roll(book: list[dict], res: dict, day: str) -> tuple[list[dict], list[dict]]
 def book_before(day: str, acct: str) -> tuple[list[dict], str | None]:
     """day 之前所有配对结果滚出来的账本（day 开盘前手上的价差组合），和账本从哪天开始记。
     用存下来的配对.json（当时用的腿2），不重新配对。"""
-    book, first = [], None
+    book, first, done = [], None, set()
+    adj = PAIRS / "账本调整.json"
+    adj = json.loads(adj.read_text(encoding="utf-8")) if adj.exists() else []
+
+    def apply(book, upto):
+        for i, a in enumerate(adj):
+            if i in done or a["账号"] != acct or a["生效日"] > upto:
+                continue
+            left = float(a["手数"])
+            for b in book:
+                if left > EPS and b["组合"] == a["组合"] and b["方向"] == a["方向"] and b["开仓日"] == a["开仓日"]:
+                    q = min(left, b["手数"])
+                    b["手数"] -= q
+                    left -= q
+            done.add(i)
+        return [b for b in book if b["手数"] > EPS]
+
     for f in sorted(PAIRS.glob(f"*_账号{acct}_配对.json")):
         d = f.name[:10]
         if d >= day:
             break
         first = first or d
+        book = apply(book, d)
         book, _ = roll(book, json.loads(f.read_text(encoding="utf-8")), d)
-    return book, first
+    return apply(book, day), first
 
 
 # ---------- 分钟线 ----------
@@ -258,13 +275,25 @@ def symbol(c: str) -> str:
     return f"{EXCHANGE.get(re.match(r'[a-z]+', c)[0], 'SHFE')}.{c}"
 
 
-def fetch_market(minute: set, daily: set, day: str) -> tuple[dict, dict, str | None]:
-    """分钟线（盘中开仓判断用）和每个合约逐日的价（算持仓浮动用）：{合约: {交易日: 价}}，还有 day 的前一个交易日。
+def minute_calendar(api, frames: dict) -> pd.DatetimeIndex:
+    """覆盖分钟线以及后续夜盘归属的交易日历，不从成交量推断交易日。"""
+    nonempty = [k for k in frames.values() if not k.empty]
+    if not nonempty:
+        return pd.DatetimeIndex([])
+    start = min(k.index.min() for k in nonempty).date()
+    end = max(k.index.max() for k in nonempty).date() + timedelta(days=20)
+    cal = api.get_trading_calendar(start_dt=start, end_dt=end)
+    return pd.DatetimeIndex(cal.loc[cal["trading"], "date"]).normalize().unique().sort_values()
+
+
+def fetch_market(minute: set, daily: set, day: str) -> tuple[dict, dict, str | None, pd.DatetimeIndex]:
+    """返回分钟线、各合约逐日价格、day 的前一个交易日，以及分钟线归属用的交易日历。
     天勤报价里有这一天、前一天的结算价就用结算价（和快期盯市一样），更早的用日线收盘价。"""
     import 开盘tick as tk  # 天勤账号、连接、分钟线都用开盘tick.py 里的
     api = tk.connect()
     try:
         k = {c: tk.minute_klines(api, symbol(c)) for c in sorted(minute)}
+        calendar = minute_calendar(api, k)
         marks, prev = {}, None
         for c in sorted(daily):
             d = api.get_kline_serial(symbol(c), 86400, data_length=60)
@@ -280,7 +309,7 @@ def fetch_market(minute: set, daily: set, day: str) -> tuple[dict, dict, str | N
             before = [x for x in days if x < day]
             prev = max(prev or "", before[-1]) if before else prev
             marks[c] = m
-        return k, marks, prev
+        return k, marks, prev, calendar
     finally:
         api.close()
 
@@ -292,22 +321,22 @@ def spread_at(combo: str, marks: dict, d: str | None):
     return None if None in p else round(p[0] - p[1], 6)
 
 
-def spread_minutes(k1: pd.DataFrame, k2: pd.DataFrame) -> pd.DataFrame:
-    """两腿同一分钟都有成交的分钟价差，标上属于哪个交易日（夜盘、夜里算下一个白天）。"""
+def spread_minutes(k1: pd.DataFrame, k2: pd.DataFrame, trading_days) -> pd.DataFrame:
+    """两腿同一分钟都有成交的分钟价差；夜盘归属按传入的交易日历确定。"""
     j = k1.add_suffix("1").join(k2.add_suffix("2"), how="inner")  # 两边列名一样（close、volume），先各加后缀
     j = j[(j["volume1"] > 0) & (j["volume2"] > 0)]
     s = pd.DataFrame({"价差": (j["close1"] - j["close2"]).round(4)})
     day_session = (s.index.hour >= 9) & (s.index.hour < 16)
-    days = sorted(set(s.index[day_session].normalize()))
+    days = pd.DatetimeIndex(trading_days).normalize().unique().sort_values()
     base = s.index.normalize() - pd.to_timedelta((s.index.hour < 9).astype(int), unit="D")
     td = []
     for t, b, ds in zip(s.index, base, day_session):
         if ds:
-            td.append(t.normalize())
+            td.append(t.normalize() if t.normalize() in days else pd.NaT)
         else:
-            nxt = [d for d in days if d > b]
-            td.append(nxt[0] if nxt else pd.NaT)
-    s["交易日"] = td
+            i = days.searchsorted(b, side="right")
+            td.append(days[i] if i < len(days) else pd.NaT)
+    s["交易日"] = pd.DatetimeIndex(td)
     return s
 
 
@@ -548,14 +577,14 @@ def main():
         (PAIRS / f"{day}_账号{acct}_账本.json").write_text(json.dumps(after, ensure_ascii=False, indent=1), encoding="utf-8")
     need = {c for o in all_opens if not o["开盘"] for c in o["组合"].split("-")}
     held = {c for b in books.values() for x in b["before"] + b["after"] + b["closed"] for c in x["组合"].split("-")}
-    k, marks, prev = fetch_market(need, held, day)
+    k, marks, prev, calendar = fetch_market(need, held, day)
     if need:
         cache = {}
         for o in all_opens:
             if not o["开盘"]:
                 a1, a2 = o["组合"].split("-")
                 if o["组合"] not in cache:
-                    cache[o["组合"]] = spread_minutes(k[a1], k[a2])
+                    cache[o["组合"]] = spread_minutes(k[a1], k[a2], calendar)
                 o["判断结果"] = judge(o, cache[o["组合"]], day)
     f = write_page(day, results, all_opens, books, marks, prev)
     for acct, res in results.items():
