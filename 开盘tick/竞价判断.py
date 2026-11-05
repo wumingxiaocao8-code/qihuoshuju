@@ -101,6 +101,7 @@ RET_DEFAULT = (0.17, 1.31)  # 2026-10-23 从 4 次开盘 30 根针算的八成�
 MIX = {p: 0.9 for p in rv.NEEDLE_GATE}  # 第 2 步改成猜首笔 = 昨收价差 + 0.9 ×（立刻能成交那边 − 昨收价差）；sc 0.7–0.95 成绩差不多
 # 混合版猜的首笔差门槛几档以内也算 ▲、不判 ❌（他定的：真针判成 ❌ 最怕，假针判成 ▲ 无所谓）：sc 5 档，别的品种按门槛的三分之一
 SLACK = {p: round(g / 3) for p, g in rv.NEEDLE_GATE.items()}
+NEAR = 0.2  # 浮层「近」= 昨收价差 + NEAR ×（猜首笔 − 昨收价差）（11-05 晚他定的：浮层只写「近」「远」，远 = 首笔半，原来的远档不上浮层；两年回放 18 个品种「重」的针挂 0.2 成都不比首笔半差，见 测试/2026-11-05_挂几成重跑/小结.md）
 HALF = 0.5  # 标签上的「首笔半」= 昨收价差 + HALF ×（猜首笔 − 昨收价差）
 HALF_BY = {"ag": 1 / 3, "sn": 1 / 3, "ni": 1 / 3}  # 按品种另设（10-31 他定的）：ag、sn、ni 挂三分之一，两年回放比挂一半多赚 4–12%（腿2 晚半秒），判断不变
 # 远档（11-02 夜他定的，全部 18 个品种）：每组挂两张单，首笔半 n1 手 + 远档 n2 手；远档 = 昨收价差 + 系数 ×（猜首笔 − 昨收价差）。
@@ -140,7 +141,7 @@ CSV_COLS = ["开盘", "组合", "腿1", "腿2", "品种", "档", "符号", "首�
             "针", "针偏几档", "门槛", "冷门腿", "冷门腿竞价手数", "冷门腿竞价占持仓‰", "冷门腿竞价持仓变化", "竞价量分",
             "立刻能卖", "立刻能买", "托住几成", "盘口分", "合计", "保留比例下", "保留比例上", "保留比例依据", "腿1盘口宽档",
             "腿1竞价手数", "腿1卖一量", "腿1买一量", "腿2竞价手数", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源",
-            "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "首笔半",
+            "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "近", "首笔半",
             "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大", "不重", "远档", "两层手数"]
 
 
@@ -438,12 +439,13 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
         guess = f"{j['猜首笔']:.{decimals(t) + 1}f}" if j.get("猜首笔") is not None else ""  # 混合版猜的首笔，写在区间前面
         if guess:  # 首笔半 = 昨收价差 + (猜首笔 − 昨收价差) × 0.5（10-25 他定的，跟猜首笔并排写；ag、sn、ni × 1/3，见 HALF_BY）
             row["首笔半"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * half_of(p1 if p1 == p2 else None), decimals(t) + 1)
+            row["近"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * NEAR, decimals(t) + 1)
             far = FAR.get(p1) if p1 == p2 else None
             if far:  # 远档（11-02 夜加）：首笔半 n1 手 + 远档 n2 手
                 row["远档"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * far[0], decimals(t) + 1)
                 row["两层手数"] = f"首笔半 {far[1]} 手 + 远档 {far[2]} 手"
-        far_txt = f"  远 {row['远档']:.{decimals(t) + 1}f}" if guess and row.get("远档") is not None else ""
-        row["文字"] = (f"{name}  首笔 {guess}  首笔半 {row['首笔半']:.{decimals(t) + 1}f}{far_txt}\n"  # 两行：浮层把第二行写在下面
+        nd = decimals(t) + 1  # 11-05 晚起文字写「近 … 远 …」：近 = NEAR 成，远 = 首笔半（csv 的「远档」列照算、不进文字）
+        row["文字"] = (f"{name}  首笔 {guess}  近 {row['近']:.{nd}f}  远 {row['首笔半']:.{nd}f}\n"  # 两行：浮层把第二行写在下面
                       f"首笔区间 ({price(rg[0], t)} ~ {price(rg[1], t)})" if rg and guess else
                       f"{name}  首笔 {price(rg[0], t)} ~ {price(rg[1], t)}" if rg else f"{name}  {j['理由']}")
         for n, s in (("腿1", s1), ("腿2", s2)):  # 竞价成交手数（浮层上标签左边的小框）和竞价后的盘口挂单手数（只记进 csv）
@@ -720,7 +722,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
         sym = r["符号"] + (f"<br><span class='note'>v1 {SYMBOL[v1]}</span>" if v1 and v1 != r["档"] else "")
         tab.append([rv.Raw(f"<span class='k k{r['档']}'>{sym}</span>"), r["组合"],
                     f"{price(r.get('首笔下沿'), t)} ~ {price(r.get('首笔上沿'), t)}" if r.get("首笔下沿") is not None else "",
-                    price(r.get("猜首笔"), t / 10), price(r.get("首笔半"), t / 10), price(r.get("远档"), t / 10), r.get("两层手数") or "",
+                    price(r.get("猜首笔"), t / 10), price(r.get("近"), t / 10), price(r.get("首笔半"), t / 10), price(r.get("远档"), t / 10), r.get("两层手数") or "",
                     price(r.get("昨收价差"), t), price(r.get("针"), t),
                     f"{rv.fmt(r.get('针偏几档'), 1, plus=True)}（门槛 {r['门槛']}）" if r.get("门槛") else rv.fmt(r.get("针偏几档"), 1, plus=True),
                     rv.fmt(r.get("冷门腿竞价占持仓‰"), 2), rv.fmt(r.get("冷门腿竞价持仓变化"), 0, plus=True),
@@ -732,7 +734,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                     (r["重仓标记"] + ("" if tags_of(r) else "（浮层不贴，只记录）")) if r.get("重仓标记") else
                     "不重（手续费贵，浮层贴灰框）" if r.get("不重") == "不重" else "",
                     ov.get(r["组合"], ""), rv.Raw(f"<span class='why'>{rv.esc(r.get('理由', ''))}</span>")])
-    body.append(rv.table(["", "组合", "首笔区间", "猜首笔", "首笔半", "远档", "两层手数", "昨收价差", "针", "针偏几档", "冷门腿竞价占持仓‰", "竞价后持仓变化",
+    body.append(rv.table(["", "组合", "首笔区间", "猜首笔", "近（浮层「近」）", "首笔半（浮层「远」）", "远档", "两层手数", "昨收价差", "针", "针偏几档", "冷门腿竞价占持仓‰", "竞价后持仓变化",
                           "立刻能卖", "立刻能买", "托住针", "立刻能成交几倍门槛", "合计", "跳空档 腿1 / 主力", "重仓标记", "外盘", "理由"], tab))
     mixed = "，".join(f"{'、'.join(ps)} 系数 {k}" for k, ps in grouped(MIX).items())
     fits = list(dict.fromkeys(f"{r['品种']}：{r['区间依据']}" for r in rows if r.get("区间依据") and r.get("保留比例依据") is None))
@@ -750,6 +752,8 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                 f"差门槛（{'，'.join(f'{chr(12289).join(ps)} {k} 档' for k, ps in grouped(SLACK).items())}）以内的也算 ▲，不判 ❌（真针判成 ❌ 最怕）。"
                 "盘口缺一边时按 v1：针不到门槛的 "
                 f"{BIG} 倍 → ✅，否则 ▲。混合版的格子上，v1 判得不一样时符号下面小字写着 v1 的。"
+                f"浮层写「近」「远」（11-05 晚起）：近 = 昨收价差 + {NEAR:g} ×（猜首笔 − 昨收价差），远 = 首笔半；"
+                f"两年回放 18 个品种「重」的针挂 {NEAR:g} 成都不比首笔半差（测试/2026-11-05_挂几成重跑/小结.md）。"
                 f"首笔半 = 昨收价差 + {HALF:g} ×（猜首笔 − 昨收价差），{'、'.join(HALF_BY)} 是 1/3（10-31 有色两年回放：挂近一点成交多、更赚）。"
                 "远档 = 昨收价差 + 远档系数 ×（猜首笔 − 昨收价差），每组挂两张单（首笔半 + 远档，手数见「两层手数」）："
                 + "，".join(f"{p} {k:g}（{a}+{b}）" for p, (k, a, b) in FAR.items())

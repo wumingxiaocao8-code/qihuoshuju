@@ -80,10 +80,10 @@ MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就
 GAP = 8  # 标签左边离公式那行字至少空 8 像素；放不下全名就去掉组合名，不盖住公式后面的价差数
 LIFE = 600  # 最多开 10 分钟（竞价判断.py 出意外没写结果时，浮层自己关掉）
 QUIET = (3, 5)  # 开盘前 3 秒到开盘后 5 秒不截屏比对格子（标签照样显示），不跟开盘那一下抢电脑
-SAMPLES = [("真", "首笔 -217.35  首笔半 -203.52  远 -199.81\n首笔区间 (-221 ~ -196)"),  # 11-02 夜起有猜首笔的格子写「半」「远」（四位价差最长）
-           ("半真", "首笔 -9.86  首笔半 -5.93  远 -5.52\n首笔区间 (-12 ~ -4)"), ("假", "首笔 -1.44  首笔半 -0.82  远 -0.68\n首笔区间 (-3 ~ 0)"),
+SAMPLES = [("真", "首笔 -217.35  近 -195.22  远 -203.52\n首笔区间 (-221 ~ -196)"),  # 11-05 晚起有猜首笔的格子写「近」「远」（四位价差最长）
+           ("半真", "首笔 -9.86  近 -3.57  远 -5.93\n首笔区间 (-12 ~ -4)"), ("假", "首笔 -1.44  近 -0.45  远 -0.82\n首笔区间 (-3 ~ 0)"),
            ("没针", "首笔 -11 ~ -9"), ("不判断", "竞价没成交")]
-TAG_SAMPLES = {"sc": ("首笔 -3.86  首笔半 -5.93  远 -5.72\n首笔区间 (-6.5 ~ -3.1)", (("重3.1", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
+TAG_SAMPLES = {"sc": ("首笔 -3.86  近 -7.17  远 -5.93\n首笔区间 (-6.5 ~ -3.1)", (("重3.1", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
                "nr": ("首笔 -40 ~ -15", (("重2.3", "重"), ("量少", "少")))}
 
 # 用自己的一份 user32，设参数类型不影响同一进程里别的代码
@@ -333,16 +333,16 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
 SHORT_TAGS = {"腿2秒进": "腿2"}  # 浮层上写短名（10-29 晚他定的），网页和 csv 还是全称
 SHOW_RANGE = False  # 浮层写不写首笔区间（10-31 晚他定的不写；想要回来改成 True）
 BELOW = True  # 11-02 夜他定的：标签（符号、半、远、重仓标记）放在公式那一行下面一行，竞价手数框再下面一行；False = 老排法（标签在公式那行右边）
-SHOW_GUESS = False  # 浮层写不写猜的首笔「首…」（11-02 夜他定的不写，只留「半」和「远」；网页和 csv 照写）
+SHOW_GUESS = False  # 浮层写不写猜的首笔「首…」（11-02 夜他定的不写；11-05 晚起只留「近」和「远」，远 = 首笔半；网页和 csv 照写）
 
 
 def short(text: str) -> str:
-    """浮层标签第一行写短：「首笔 423.2  首笔半 442.1  远 445.0」→「半442.1 远445.0」（SHOW_GUESS = True 时前面留「首423.2」）；
-    第二行「首笔区间」不动。"""
+    """浮层标签第一行写短：「首笔 423.2  近 430.1  远 442.1」→「近430.1 远442.1」（SHOW_GUESS = True 时前面留「首423.2」；
+    老格式的「首笔半」写成「半」）；第二行「首笔区间」不动。"""
     first, *rest = text.split("\n", 1)
     if not SHOW_GUESS:
         first = re.sub(r"首笔 (?!\S+ ~)\S+\s*", "", first)  # 只有区间的「首笔 a ~ b」（SHOW_RANGE）不动
-    first = first.replace("首笔半 ", "半").replace("远 ", "远").replace("首笔 ", "首").replace("  ", " ")
+    first = first.replace("首笔半 ", "半").replace("近 ", "近").replace("远 ", "远").replace("首笔 ", "首").replace("  ", " ")
     return "\n".join([first] + rest)
 
 
@@ -519,7 +519,7 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
                     book_box(d, book, left + book_width(d, book, size), top + size * 1.5 * (2 if "\n" in text else 1) + size * .3, size)
                 continue
             first, *rest = text.split("\n", 1)
-            if right - badge_width(d, first, size, lead=lead) < x0 + o["公式宽"]:  # 放不下：先把「半…」挪下去，没有「首」时挪「远…」
+            if right - badge_width(d, first, size, lead=lead) < x0 + o["公式宽"]:  # 放不下：先把「半…」挪下去，没有「首」时挪「远…」（11-05 晚起第一行是「近… 远…」，挪的是「远…」）
                 cut = " 半" if " 半" in first else " 远" if " 远" in first else None
                 if cut:
                     first, moved = first.split(cut, 1)
