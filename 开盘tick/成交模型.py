@@ -72,7 +72,7 @@ def queue_fill(books, s, L, ref2, tick, valid=5.0, first_only=False, follow=Fals
         return (b1 is not None and b1 <= price + EPS) or (avg is not None and avg < price - EPS)
 
     for i, (t, b1, a1, b2, a2, *rest) in enumerate(books):
-        if t > valid + EPS or (first_only and i > 0):
+        if t > valid + EPS or (first_only and t > 0.5 + 0.05):
             break
         if start is not None and t <= start + EPS:
             continue
@@ -86,7 +86,9 @@ def queue_fill(books, s, L, ref2, tick, valid=5.0, first_only=False, follow=Fals
                 continue
             px1 = resting
         elif first_only:
-            if t > 0.5 + 0.05 or avg is None:  # 只认开盘后 0.5 秒那张，腿1 这半秒要有成交
+            if avg is None:  # 只认开盘后 0.5 秒以内第一张有成交的，腿1 这半秒要有成交
+                if t < 0.5 - 0.05:
+                    continue  # 开盘那一刻（0 秒）的空快照：往后看 0.5 秒那张（11-05 审查前这里直接放弃了）
                 break
             edge = a1 if s > 0 else b1  # 撮合停下的地方：卖价差看剩下的卖一，买价差看剩下的买一
             if edge is None:

@@ -34,7 +34,9 @@
   立刻能成交那边偏出门槛 2 倍以上 = 大机会，记「重3.6」（几倍门槛）；再看两件事：
   主力（腿2）竞价跳空比腿1 小 → 加「腿2秒进」（腿2 晚两秒才进多半亏，10.8 那种）；
   冷门腿竞价不到持仓 0.7‰ → 加「量少」（开盘第一个半秒能成交的手数只有其他大机会的一半到三分之二）。
-  浮层上只在 HEAVY_SHOW 的品种（sc、nr，10-27 晚起加 fu、bu，10-31 起加有色 ag cu al zn pb sn ni 和 ao br sp rb hc ru ss）跨月格子上贴，别的品种只记进 csv 和网页。
+  浮层上只在 HEAVY_SHOW 的品种（sc、nr，10-27 晚起加 fu、bu，10-31 起加有色 ag cu al zn pb sn ni 和 ao br sp rb hc ru ss，11-05 晚加跨品种 nr-ru）的格子上贴，别的品种只记进 csv 和网页。
+跨品种 nr-ru（11-05 晚）：门槛 8 档，混合版、差门槛 1/3（3 档）不判 ❌、≥ 2 倍不判 ❌ 照同品种那套，不放宽；首笔区间用两年 L2 种子、八成范围（后一年包住 84%）。
+  见 测试/2026-11-05_nr-ru门槛/小结.md。别的跨品种组合没定门槛，照旧「？」。
   有色（10-31，上期所两年回放：分析/2026-10-31/有色开盘/小结.md 第 5、9 节）：七个品种都是「重 ≥ 3 倍」最赚，不重扣完费只剩 1–2.5 档。
   cu 手续费一组约 3.3 档（开 27、平今 54 元/手），不重的每手扣费后约 1 档、腿2 晚半秒就亏 → FEE_SKIP：cu 判 ✅▲ 但不重时浮层贴灰框「不重」。
 第 1 步放宽（10-31，RELAX：ag、al、zn、pb）：只有「竞价量分 −1、盘口分 0」的不判 ❌，交给第 2 步猜首笔。有色冷门腿竞价量本来就少
@@ -117,7 +119,7 @@ FIT_Q_BY = {p: (0.05, 0.95) for p in ("fu", "bu", "ao", "br", "sp", "rb", "hc", 
 SEED = rv.REVIEW / "两年回放_{}.csv"  # 两年回放切出来的开盘（只留本机），跟开盘复盘.csv 的实盘行一起用
 # ---- 重仓标记（2026-10-24 晚，sc、nr、lu 两年 L2 回放：分析/2026-10-24/大波动指标/小结.md 第 7 节）----
 HEAVY = 2.0  # 立刻能成交那边偏出门槛 2 倍以上 = 大机会：不判 ❌（两年 5 次被判 ❌ 的全开到了门槛外），记「重仓标记」
-HEAVY_SHOW = ("sc", "nr", "fu", "bu", "ag", "cu", "al", "zn", "pb", "sn", "ni", "ao", "br", "sp", "rb", "hc", "ru", "ss")  # 浮层只在这几个品种的跨月格子上贴重仓标记（验过的：sc、nr 10-24，fu、bu 10-27，有色和 ao br sp rb hc ru ss 10-31 上期所两年回放），别的品种只记进 csv 和网页
+HEAVY_SHOW = ("sc", "nr", "fu", "bu", "ag", "cu", "al", "zn", "pb", "sn", "ni", "ao", "br", "sp", "rb", "hc", "ru", "ss", "nr-ru")  # 浮层只在这几个品种的格子上贴重仓标记（验过的：sc、nr 10-24，fu、bu 10-27，有色和 ao br sp rb hc ru ss 10-31 上期所两年回放，nr-ru 11-05 两年 L2：门槛 8 时重 22 次、每次约是不重的两倍），别的品种只记进 csv 和网页
 FEE_SKIP = ("cu",)  # 手续费贵、不重的扣完费几乎白干的品种：判 ✅▲ 但不重时浮层贴灰框「不重」（10-31，cu 一组开平约 3.3 档）
 RELAX = ("ag", "al", "zn", "pb", "br", "rb", "hc", "ao")  # 第 1 步只有「竞价量分 −1、盘口分 0」时不判 ❌，交给第 2 步（10-31 有色和 br rb hc ao 两年回放；cu、sp、ss、ru 不放，见文件开头）
 TAG_STYLE = {"腿2秒进": "快", "量少": "少", "不重": "灰"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框、不重 灰框
@@ -274,12 +276,15 @@ def judge(a: dict | None, b: dict | None, close1, close2, t: float, gate, names=
     return out
 
 
-def retention(past, before: datetime, kind: str | None = None) -> tuple:
-    """首笔保留针几成的八成范围 (下, 上, 依据)：开盘复盘.csv 里 before 以前的开盘、同品种组合、针偏 3 档以上的。"""
+def retention(past, before: datetime, kind: str | None = None, product: str | None = None) -> tuple:
+    """首笔保留针几成的八成范围 (下, 上, 依据)：开盘复盘.csv 里 before 以前的开盘、同品种组合（product）、针偏 3 档以上的。
+    11-05 审查前没按 product 过滤，混用了别的品种。"""
     if past is None or not len(past) or "首笔偏几档" not in past:
         return RET_DEFAULT + ("默认（还没有开盘复盘）",)
     p = past[pd.to_datetime(past["开盘"], format="%Y-%m-%d %H:%M", errors="coerce") < pd.Timestamp(before)]
     p = p[~p["品种"].astype(str).str.contains("-") & p["针偏几档"].notna() & p["首笔偏几档"].notna()]
+    if product is not None:
+        p = p[p["品种"].astype(str) == product]
     p = p[p["针偏几档"].abs() >= RET_MIN]
     r = p["首笔偏几档"] / p["针偏几档"]
     if kind and "59分判断" in p:
@@ -401,6 +406,7 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
     for s1, s2 in pairs:
         c1, c2 = s1.split(".")[-1], s2.split(".")[-1]
         p1, p2 = rv.product_of(s1), rv.product_of(s2)
+        key = p1 if p1 == p2 else f"{p1}-{p2}"  # 跨品种组合按「nr-ru」查门槛、混合版、首笔区间（11-05 晚 nr-ru 定了 8 档；没定的照旧不判断）
         t = ticks.get(s1) or rv.TICK.get(p1) or 1
         if p1 != p2:  # 跨品种：两腿一档不一样时，价差按小的那个算
             t = min(t, ticks.get(s2) or rv.TICK.get(p2) or t)
@@ -409,8 +415,7 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
             j = {"档": "不判断", "理由": "、".join(bad)}
         else:
             j = judge(snaps.get(s1), snaps.get(s2), closes.get(s1), closes.get(s2), t,
-                      rv.NEEDLE_GATE.get(p1) if p1 == p2 else None, (c1, c2), MIX.get(p1) if p1 == p2 else None,
-                      SLACK.get(p1, 0) if p1 == p2 else 0, p1 == p2 and p1 in RELAX)
+                      rv.NEEDLE_GATE.get(key), (c1, c2), MIX.get(key), SLACK.get(key, 0), key in RELAX)
             if p1 == p2 and p1 in FEE_SKIP and j.get("档") in ("真", "半真") and not j.get("重仓标记"):
                 j["不重"] = "不重"
                 j["理由"] = (j.get("理由", "") + f"；不重：{p1} 一组开平手续费约 3.3 档，两年回放不重的每手扣费后约 1 档、腿2 晚半秒就亏，"
@@ -422,14 +427,14 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
                 j["理由"] = (j.get("理由", "") + f"；薄大：腿2 要吃{side}盘，第二档离第一档 {j['腿2台阶2']:g} 档（≥ {THIN_STEP}），"
                             f"{side}一到{side}五 {j['腿2要吃五档']} 手、是平时（{j['腿2平时']:g} 手）的 {j['腿2厚薄倍']:.2f} 倍"
                             "（sc 两年回放这种腿2 晚半秒多半亏，浮层顶替「重」）")
-        fit = range_fit(past, o, p1) if p1 == p2 and p1 in FIT else None
+        fit = range_fit(past, o, key) if key in FIT else None
         rg = fit_range(j, t, fit)
         row = {"开盘": f"{o:%Y-%m-%d %H:%M}", "组合": f"{c1}-{c2}", "腿1": c1, "腿2": c2,
-               "品种": p1 if p1 == p2 else f"{p1}-{p2}", **j, "符号": SYMBOL[j["档"]], "一档": t, "来源": source}
+               "品种": key, **j, "符号": SYMBOL[j["档"]], "一档": t, "来源": source}
         if rg:
             row["区间依据"] = fit_note(fit)
         else:  # 老办法：盘口两头各 1 档 + 保留比例
-            ret = retention(past, o, j["档"] if j["档"] in ("真", "半真", "假") else None)
+            ret = retention(past, o, j["档"] if j["档"] in ("真", "半真", "假") else None, key)
             rg = first_range(j, t, ret)
             row |= {"保留比例下": round(ret[0], 2), "保留比例上": round(ret[1], 2), "保留比例依据": ret[2],
                     "区间依据": f"盘口立刻能成交的价差两头各 1 档 + 保留比例（{ret[2]}）"}
@@ -438,9 +443,9 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
         name = fl.label_name(s1, s2)
         guess = f"{j['猜首笔']:.{decimals(t) + 1}f}" if j.get("猜首笔") is not None else ""  # 混合版猜的首笔，写在区间前面
         if guess:  # 首笔半 = 昨收价差 + (猜首笔 − 昨收价差) × 0.5（10-25 他定的，跟猜首笔并排写；ag、sn、ni × 1/3，见 HALF_BY）
-            row["首笔半"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * half_of(p1 if p1 == p2 else None), decimals(t) + 1)
+            row["首笔半"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * half_of(key), decimals(t) + 1)
             row["近"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * NEAR, decimals(t) + 1)
-            far = FAR.get(p1) if p1 == p2 else None
+            far = FAR.get(key)
             if far:  # 远档（11-02 夜加）：首笔半 n1 手 + 远档 n2 手
                 row["远档"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * far[0], decimals(t) + 1)
                 row["两层手数"] = f"首笔半 {far[1]} 手 + 远档 {far[2]} 手"
@@ -985,7 +990,8 @@ def live(o: datetime, pairs: list, jf: Path, state: dict, page: Path, skew: floa
         for s in before:
             closes[s], src[s] = close_of(api, s, before[s], o)
         past = rv.read_csv(rv.REC_FILE)
-        for p in sorted({rv.product_of(s) for s in symbols} & set(FIT)):  # sc 首笔区间的系数也先算好（要 import scipy，约 1 秒）
+        keys = {rv.product_of(a) if rv.product_of(a) == rv.product_of(b) else f"{rv.product_of(a)}-{rv.product_of(b)}" for a, b in pairs}
+        for p in sorted(keys & set(FIT)):  # sc 首笔区间的系数也先算好（要 import scipy，约 1 秒；跨品种按 nr-ru 这样的名字）
             range_fit(past, o, p)
         for p in sorted({rv.product_of(s) for s in symbols} & set(BOOK_SHOW)):  # 薄大要的腿2「平时」盘口量也先算好
             book_norm(o, p)
@@ -1034,7 +1040,10 @@ def live(o: datetime, pairs: list, jf: Path, state: dict, page: Path, skew: floa
         return rows, log
     finally:
         t = time.time()
-        api.close()
+        try:
+            api.close()
+        except Exception as e:  # 判断已经算好、浮层已经贴上：断开出错只记一笔，不能把结果冲掉（11-05 审查）
+            log["断开出错"] = f"{type(e).__name__}: {e}"
         log["断开"] = clock()
         log["断开用时"] = time.time() - t
 
@@ -1077,6 +1086,7 @@ def run_live(force: bool, overlay: bool) -> None:
             print(f"{counts(rows)}；快照 {a:%H:%M:%S.%f}"[:-3] + f"–{b:%H:%M:%S.%f}"[:-3]
                   + f" 到，{log['算好']:%H:%M:%S.%f}"[:-3] + f" 算好，{shown:%H:%M:%S.%f}"[:-3] + " 交给浮层，"
                   + f"{log['断开']:%H:%M:%S} 断开天勤（用了 {log['断开用时']:.1f} 秒）；网页 {page}"
+                  + (f"；断开时出错（不影响结果）：{log['断开出错']}" if "断开出错" in log else "")
                   + (f"；快照到达 − 快照上的时间 = {log['晚到']:+.2f} 秒" if "晚到" in log else "")
                   + (f"；{log['昨收']}" if "昨收" in log else ""))
             for r in rows:

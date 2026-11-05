@@ -106,7 +106,10 @@ def http_get(url: str, referer: str = "", timeout: int = 30) -> tuple[int, str]:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.status, resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
-            return e.code, ""
+            if e.code in (404, 410):
+                return e.code, ""  # 确实没有这个文件（交易所没有这天的数据就回 404）
+            last_err = e  # 503、429、403 这类是临时的：重试，还不行就当网络问题报错，不能当成「没有数据」记下（11-05 审查）
+            time.sleep(1 + attempt)
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             last_err = e
             time.sleep(1 + attempt)
@@ -696,7 +699,7 @@ def analyze_daily(series: list[float]) -> tuple[dict, list[tuple[str, str, str]]
     n = len(series)
     v = series[-1]
     p1 = series[-2] if n >= 2 else None
-    p5 = series[-6] if n >= 6 else series[0]
+    p5 = series[-6] if n >= 6 else None  # 不够 6 期就没有「5 日变化」（11-05 审查前拿第一期顶替，却写成近 5 个交易日）
     lo, hi = min(series), max(series)
     stats = {"latest": v, "p1": p1, "p5": p5, "first": series[0], "lo": lo, "hi": hi, "n": n,
              "pos": None if hi == lo else (v - lo) / (hi - lo) * 100}
