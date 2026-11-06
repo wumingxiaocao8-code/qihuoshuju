@@ -19,7 +19,9 @@
      混合版（2026-10-24 用 sc 两年 L2 回放定的，同一晚推到所有定了门槛的品种，见 MIX）：第 1 步照旧；剩下的猜首笔 = 昨收价差 + 0.9 ×（立刻能成交那边 − 昨收价差），
      按针真假的定义分成 ✅ ▲ ❌（猜的首笔往反方向偏出门槛也算 ❌）。两年 153 根针：三档说对 59% → 71%，开不开得到 66% → 76%。
      10-24 晚放宽（SLACK）：猜的首笔差门槛 5 档以内（sc；别的品种按门槛的三分之一）也算 ▲、不判 ❌（他定的：真针判成 ❌ 最怕，假针判成 ▲ 无所谓）。
-     nr、lu 两年回放（放宽 2 档）：三档说对 57% → 64%、51% → 70%，能不能开到 62% → 71%、59% → 78%，真针判成 ❌ 14 → 15、2 → 2；别的品种没有历史 tick，没验。
+     nr、lu 两年回放（放宽 2 档）：三档说对 57% → 64%、51% → 70%，能不能开到 62% → 71%、59% → 78%，真针判成 ❌ 14 → 15、2 → 2。
+     fu、bu（10-27）、有色七个和 ao br sp rb hc ru ss（10-31）后来用上期所两年 L2 原样重判过：「开不开得到」说对 61–77%，都比瞎猜好；
+     但骨架（打分线、k 0.9、放宽三分之一、2 倍不判 ❌）是照 sc 定的搬过去，只按品种调了门槛、RELAX、首笔半，没有按品种重新设计。
      两年 153 根：真针判成 ❌ 7 → 3 根，判 ❌ 的里面真开不到的 74% → 83%；代价是假针少认出 16 根，三档说对 72%（修好压线那根后）→ 66%。
      v1 会判成什么另记一列（v1档），开盘复盘的规则五两个对照着看。
 首笔区间（第一次真实成交大概在哪），按一档取整（下沿往下、上沿往上）：
@@ -34,6 +36,7 @@
   立刻能成交那边偏出门槛 2 倍以上 = 大机会，记「重3.6」（几倍门槛）；再看两件事：
   主力（腿2）竞价跳空比腿1 小 → 加「腿2秒进」（腿2 晚两秒才进多半亏，10.8 那种）；
   冷门腿竞价不到持仓 0.7‰ → 加「量少」（开盘第一个半秒能成交的手数只有其他大机会的一半到三分之二）。
+  「腿2秒进」11-06 起不跟着重仓标记走：有针、主力动得少就在浮层上贴（LEG2_ALWAYS），csv 的「重仓标记」照旧只在大机会时写。
   浮层上只在 HEAVY_SHOW 的品种（sc、nr，10-27 晚起加 fu、bu，10-31 起加有色 ag cu al zn pb sn ni 和 ao br sp rb hc ru ss，11-05 晚加跨品种 nr-ru）的格子上贴，别的品种只记进 csv 和网页。
 跨品种 nr-ru（11-05 晚）：门槛 8 档，混合版、差门槛 1/3（3 档）不判 ❌、≥ 2 倍不判 ❌ 照同品种那套，不放宽；首笔区间用两年 L2 种子、八成范围（后一年包住 84%）。
   见 测试/2026-11-05_nr-ru门槛/小结.md。别的跨品种组合没定门槛，照旧「？」。
@@ -99,7 +102,7 @@ BIG = 1.5  # 针 ≥ 门槛的 1.5 倍：大概率开不到整根（▲）
 RET_MIN, RET_N, RET_KIND_N = 3, 10, 8  # 保留比例：用针偏 3 档以上的；全部够 10 根、同一种符号够 8 根才用
 RET_DEFAULT = (0.17, 1.31)  # 2026-10-23 从 4 次开盘 30 根针算的八成范围
 # ---- 混合版（2026-10-24，sc 两年 L2 回放：分析/2026-10-24/sc两年tick回放/小结.md；10-24 晚他定的：所有定了门槛的品种都换）----
-# 只有 sc、nr、lu 用两年回放验过（nr、lu 见 分析/2026-10-24/大波动指标/现规则对照输出.txt），别的品种没有历史 tick，没验
+# 照 sc 定、sc nr lu 先验（nr、lu 见 分析/2026-10-24/大波动指标/现规则对照输出.txt）；fu bu、有色、ao br sp rb hc ru ss 后来用上期所两年 L2 原样重判过（见文件开头），骨架没按品种重新设计
 MIX = {p: 0.9 for p in rv.NEEDLE_GATE}  # 第 2 步改成猜首笔 = 昨收价差 + 0.9 ×（立刻能成交那边 − 昨收价差）；sc 0.7–0.95 成绩差不多
 # 混合版猜的首笔差门槛几档以内也算 ▲、不判 ❌（他定的：真针判成 ❌ 最怕，假针判成 ▲ 无所谓）：sc 5 档，别的品种按门槛的三分之一
 SLACK = {p: round(g / 3) for p, g in rv.NEEDLE_GATE.items()}
@@ -122,7 +125,11 @@ HEAVY = 2.0  # 立刻能成交那边偏出门槛 2 倍以上 = 大机会：不�
 HEAVY_SHOW = ("sc", "nr", "fu", "bu", "ag", "cu", "al", "zn", "pb", "sn", "ni", "ao", "br", "sp", "rb", "hc", "ru", "ss", "nr-ru")  # 浮层只在这几个品种的格子上贴重仓标记（验过的：sc、nr 10-24，fu、bu 10-27，有色和 ao br sp rb hc ru ss 10-31 上期所两年回放，nr-ru 11-05 两年 L2：门槛 8 时重 22 次、每次约是不重的两倍），别的品种只记进 csv 和网页
 FEE_SKIP = ("cu",)  # 手续费贵、不重的扣完费几乎白干的品种：判 ✅▲ 但不重时浮层贴灰框「不重」（10-31，cu 一组开平约 3.3 档）
 RELAX = ("ag", "al", "zn", "pb", "br", "rb", "hc", "ao")  # 第 1 步只有「竞价量分 −1、盘口分 0」时不判 ❌，交给第 2 步（10-31 有色和 br rb hc ao 两年回放；cu、sp、ss、ru 不放，见文件开头）
-TAG_STYLE = {"腿2秒进": "快", "量少": "少", "不重": "灰"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框、不重 灰框
+TAG_STYLE = {"腿2秒进": "快", "量少": "少", "不重": "灰", "小针": "针"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框、不重 灰框、小针 青框
+# 小针（11-06 他定的，测试/2026-11-06_fu专项/小结.md）：针没出门槛，但竞价后立刻能成交那边顺着针偏 ≥ 这么多档 → 判 ▲、贴「小针」，色块「小」。
+# fu 两年回放（正滑一半、挂首笔半）：早 5 年每次 +1.9 档、近两年 +4.1 档（9 个季度全赚），约一周一次；偏 ≤ 4 档的怎么算都亏
+SMALL = {"fu": 12}
+LEG2_ALWAYS = True  # 11-06 他定的：「腿2秒进」不管针真假、重不重都贴（以前只跟着「重…」贴）；False = 回到老样子
 # ---- 薄大（2026-10-30，分析/2026-10-26/腿2控价/小结.md 第 12、14 节）----
 BOOK_SHOW = ("sc",)  # 只有 sc 判薄大（nr、fu、bu、lu 回放里薄大不亏）
 THIN_STEP = 5  # 要吃那边第二档离第一档 ≥ 5 档 = 控价大（他定的）
@@ -144,7 +151,7 @@ CSV_COLS = ["开盘", "组合", "腿1", "腿2", "品种", "档", "符号", "首�
             "立刻能卖", "立刻能买", "托住几成", "盘口分", "合计", "保留比例下", "保留比例上", "保留比例依据", "腿1盘口宽档",
             "腿1竞价手数", "腿1卖一量", "腿1买一量", "腿2竞价手数", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源",
             "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "近", "首笔半",
-            "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大", "不重", "远档", "两层手数"]
+            "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大", "不重", "远档", "两层手数", "小针"]
 
 
 # ---------- 判断（实盘、回放、开盘复盘共用） ----------
@@ -164,11 +171,12 @@ def price(x, t: float) -> str:
 
 
 def judge(a: dict | None, b: dict | None, close1, close2, t: float, gate, names=("腿1", "腿2"), mix=None, slack=0,
-          relax=False) -> dict:
+          relax=False, small=None) -> dict:
     """a、b = 两腿竞价那张快照 {竞价价（竞价没成交是 None）, 竞价手数, 持仓（竞价后）, 持仓变化, 买一, 卖一, 买一量, 卖一量}；
     close1、close2 = 两腿昨收；t = 价差的一档；gate = 门槛（档，None = 还没定）；names = 两腿的合约名（写理由用）；
     mix = 混合版的系数（MIX，None = v1）；slack = 混合版猜的首笔差门槛几档以内也不判 ❌（SLACK）；
-    relax = 第 1 步只有「竞价量分 −1、盘口分 0」时不判 ❌、交给第 2 步（RELAX 的品种）。
+    relax = 第 1 步只有「竞价量分 −1、盘口分 0」时不判 ❌、交给第 2 步（RELAX 的品种）；
+    small = 针没出门槛、但立刻能成交那边顺着针偏到这么多档时判 ▲、记「小针」（SMALL 的品种，None = 不看）。
     返回 档（真 / 半真 / 假 / 没针 / 不判断）、v1档、理由和每一步算的数。
     首笔区间另外算（first_range、fit_range）。"""
     out = {"档": "不判断"}
@@ -200,6 +208,14 @@ def judge(a: dict | None, b: dict | None, close1, close2, t: float, gate, names=
         out["理由"] = f"还没定门槛（针偏 {d:+d} 档）"
         return out
     if abs(d) < gate:
+        k = "立刻能卖" if d > 0 else "立刻能买"
+        e = half_up(round((out[k] - base) / t, 6)) * (1 if d > 0 else -1) if small and d and k in out else None
+        if e is not None and e >= small:  # 小针（SMALL）：针不大，但竞价后盘口已经顺着针托出去这么远
+            guess = base + (mix or 0.9) * (out[k] - base)
+            out |= {"档": "半真", "小针": "小针", "猜首笔": round(guess, decimals(t) + 1),
+                    "理由": f"针偏 {d:+d} 档，没出门槛 {gate} 档；但竞价后{k}的价差 {price(out[k], t)}，顺着针偏 {e} 档（≥ {small} 档），"
+                            f"算小针 ▲（两年回放这种针挂首笔半也赚，测试/2026-11-06_fu专项/小结.md）"}
+            return out
         out |= {"档": "没针", "理由": f"针偏 {d:+d} 档，没出门槛 {gate} 档"}
         return out
     # 第 1 步：竞价量分 + 盘口分，合计 ≤ −1 → 假
@@ -415,7 +431,7 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
             j = {"档": "不判断", "理由": "、".join(bad)}
         else:
             j = judge(snaps.get(s1), snaps.get(s2), closes.get(s1), closes.get(s2), t,
-                      rv.NEEDLE_GATE.get(key), (c1, c2), MIX.get(key), SLACK.get(key, 0), key in RELAX)
+                      rv.NEEDLE_GATE.get(key), (c1, c2), MIX.get(key), SLACK.get(key, 0), key in RELAX, SMALL.get(key))
             if p1 == p2 and p1 in FEE_SKIP and j.get("档") in ("真", "半真") and not j.get("重仓标记"):
                 j["不重"] = "不重"
                 j["理由"] = (j.get("理由", "") + f"；不重：{p1} 一组开平手续费约 3.3 档，两年回放不重的每手扣费后约 1 档、腿2 晚半秒就亏，"
@@ -666,15 +682,27 @@ def grouped(d: dict) -> dict:
 
 
 def tags_of(r: dict) -> list:
-    """浮层上的重仓标记 [[字, 样式], …]，贴在符号后面；只有 HEAVY_SHOW 的品种（同品种跨月）贴，别的返回空。"""
-    if r.get("品种") in BOOK_SHOW and r.get("薄大") == "薄大":  # 薄大顶替重仓那一串（sc 两年回放：重 + 薄大 也是亏的）
-        return [["薄大", "薄"]]
-    if r.get("品种") in FEE_SKIP and r.get("不重") == "不重":
-        return [["不重", "灰"]]
+    """浮层上的重仓标记 [[字, 样式], …]，贴在符号后面；只有 HEAVY_SHOW 的品种（同品种跨月）贴「重…」那一串。
+    「腿2秒进」11-06 他定的：只要主力动得少，不管针判真假、重不重、哪个品种都贴（LEG2_ALWAYS）。"""
     t = r.get("重仓标记")
-    if r.get("品种") not in HEAVY_SHOW or not isinstance(t, str) or not t:
-        return []
-    return [[w, "重" if w.startswith("重") else TAG_STYLE.get(w, "少")] for w in t.split()]
+    if r.get("品种") in BOOK_SHOW and r.get("薄大") == "薄大":  # 薄大顶替重仓那一串（sc 两年回放：重 + 薄大 也是亏的）
+        out = [["薄大", "薄"]]
+    elif r.get("品种") in FEE_SKIP and r.get("不重") == "不重":
+        out = [["不重", "灰"]]
+    elif r.get("品种") in HEAVY_SHOW and isinstance(t, str) and t:
+        out = [[w, "重" if w.startswith("重") else TAG_STYLE.get(w, "少")] for w in t.split()]
+    else:
+        out = []
+    if r.get("小针") == "小针":
+        out.append(["小针", TAG_STYLE["小针"]])
+    if LEG2_ALWAYS and leg2_slow(r) and "腿2秒进" not in [w for w, _ in out]:
+        out.append(["腿2秒进", TAG_STYLE["腿2秒进"]])
+    return out
+
+
+def leg2_slow(r: dict) -> bool:
+    """有针（判了 ✅ ▲ ❌）且主力（腿2）竞价跳空比腿1 小。"""
+    return r.get("档") in ("真", "半真", "假") and r.get("主力动得少") == True  # noqa: E712（csv 读回来是 numpy 布尔，NaN 也要当否）
 
 
 def counts(rows: list) -> str:
@@ -736,8 +764,10 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                     rv.fmt(r.get("立刻能成交几倍门槛"), 1), rv.fmt(r.get("合计"), 0, plus=True),
                     f"{rv.fmt(r['腿1跳空档'], 1, plus=True)} / {rv.fmt(r['腿2跳空档'], 1, plus=True)}" if r.get("腿1跳空档") is not None else "",
                     ("薄大" + (f"（顶替 {r['重仓标记']}）" if r.get("重仓标记") else "")) if r.get("薄大") == "薄大" else
-                    (r["重仓标记"] + ("" if tags_of(r) else "（浮层不贴，只记录）")) if r.get("重仓标记") else
-                    "不重（手续费贵，浮层贴灰框）" if r.get("不重") == "不重" else "",
+                    (r["重仓标记"] + ("" if r.get("品种") in HEAVY_SHOW else "（浮层不贴，只记录）")) if r.get("重仓标记") else
+                    "不重（手续费贵，浮层贴灰框）" + ("、腿2秒进" if LEG2_ALWAYS and leg2_slow(r) else "") if r.get("不重") == "不重" else
+                    "小针（针没出门槛、盘口托得远，浮层贴青框、色块小）" + ("、腿2秒进" if LEG2_ALWAYS and leg2_slow(r) else "") if r.get("小针") == "小针" else
+                    "腿2秒进（主力动得少）" if LEG2_ALWAYS and leg2_slow(r) else "",
                     ov.get(r["组合"], ""), rv.Raw(f"<span class='why'>{rv.esc(r.get('理由', ''))}</span>")])
     body.append(rv.table(["", "组合", "首笔区间", "猜首笔", "近（浮层「近」）", "首笔半（浮层「远」）", "远档", "两层手数", "昨收价差", "针", "针偏几档", "冷门腿竞价占持仓‰", "竞价后持仓变化",
                           "立刻能卖", "立刻能买", "托住针", "立刻能成交几倍门槛", "合计", "跳空档 腿1 / 主力", "重仓标记", "外盘", "理由"], tab))

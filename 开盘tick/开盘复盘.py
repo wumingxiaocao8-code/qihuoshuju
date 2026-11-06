@@ -832,14 +832,29 @@ def rule_ratio(rec: pd.DataFrame) -> str:
                   "样本"], rows)
 
 
+def in_delivery(r) -> bool:
+    """11-06 加：有一条腿已进交割月（腿的 YYMM ≤ 开盘那个月，如 11 月开盘的 cu2611）。这种腿盘口薄、竞价只有几手，规则五另列、不算进命中率。"""
+    ym = str(r["开盘"])[2:4] + str(r["开盘"])[5:7]
+    return any(str(r[c])[-4:].isdigit() and str(r[c])[-4:] <= ym for c in ("腿1", "腿2"))
+
+
+def walked(g: pd.DataFrame) -> pd.Series:
+    """11-06 加：首笔顺着针的方向走了针的几成（1 = 开到针、0 = 没动、负数 = 反向）。"""
+    dev = pd.to_numeric(g["针偏几档"], errors="coerce")
+    first = pd.to_numeric(g["首笔偏几档"], errors="coerce")
+    return (first / dev).where(dev.abs() > 0).dropna()
+
+
 def rule_auction(rec: pd.DataFrame) -> str:
-    """规则五：59 分判断准不准。判成 ✅ ▲ ❌ 的，实际开成 真 / 半真 / 假 / 反向 各几根；首笔落没落在预计区间里。实盘、回放分开。"""
+    """规则五：59 分判断准不准。判成 ✅ ▲ ❌ 的，实际开成 真 / 半真 / 假 / 反向 各几根；首笔落没落在预计区间里。实盘、回放分开。
+    11-06 加：首笔走了针的几成（中位）、程序版模拟赚亏（不按门槛一刀切）；有腿进了交割月的另列在下面，不算进上面的命中率。"""
     import 竞价判断 as jd
     s = rec[rec["59分判断"].isin(["真", "半真", "假"])]
+    dlv = s.apply(in_delivery, axis=1) if len(s) else pd.Series(dtype=bool)
     rows = []
-    for src in ("实盘", "回放"):
+    for src in ("实盘", "回放", "交割月腿"):
         for k in ("真", "半真", "假"):
-            g = s[(s["判断来源"] == src) & (s["59分判断"] == k)]
+            g = s[dlv & (s["59分判断"] == k)] if src == "交割月腿" else s[~dlv & (s["判断来源"] == src) & (s["59分判断"] == k)]
             if not len(g):
                 continue
             c = {x: int((g["针真假"] == x).sum()) for x in ("真", "半真", "假", "反向")}
@@ -847,16 +862,26 @@ def rule_auction(rec: pd.DataFrame) -> str:
             right = c[k] + (c["反向"] if k == "假" else 0)  # ❌ 说的是「开不到」，实际反向也算对
             fill = c["真"] + c["半真"] if k != "假" else c["假"] + c["反向"]  # 能不能开到说对了没有
             box = g["首笔在区间里"].isin(["是", "否"])
+            w = walked(g[g["针真假"].isin(["真", "半真", "假", "反向"])])
+            st = sim_stats(g, "程序") if "程序成交" in g else {}
             rows.append([src, f"{jd.SYMBOL[k]} {k}", n, c["真"], c["半真"], c["假"], c["反向"],
                          f"{right / n * 100:.0f}%" if n else "", f"{fill / n * 100:.0f}%" if n else "",
+                         f"{w.median() * 10:.1f} 成" if len(w) else "", f"{(w >= 0.5).mean() * 100:.0f}%" if len(w) else "",
+                         st.get("成交", ""), colored(st["平均档"], 1) if st.get("平均档") else "", st.get("合计档", ""),
                          f"{int((g['首笔在区间里'] == '是').sum())} / {int(box.sum())}", small(g["开盘"].nunique())])
     if not rows:
         return "<p>还没有判成 ✅ ▲ ❌ 的针。</p>"
     box = rec["首笔在区间里"].isin(["是", "否"])
     allin = (f"<p class='note'>首笔区间（所有有区间的组合，含没针的）：{int((rec['首笔在区间里'] == '是').sum())} / {int(box.sum())} "
              f"落在里面。</p>") if box.any() else ""
-    return table(["来源", "判成", "根数", "实际真", "半真", "假", "反向", "说对了", "能不能开到说对了", "首笔在区间里", "样本"],
-                 rows) + allin + versus_v1(s, jd.MIX)
+    note = ("<p class='note'>11-06 加：「走了针几成」= 首笔顺着针走了针的几成，取中位（10 成 = 开到针，0 = 没动，负数 = 反向），"
+            "「走到一半以上」= 走了 5 成以上的占比：门槛只差一两档被记成「假」的，这两列看得出来。"
+            "程序版 = 规则六下面「成交算法」那张表的程序版（开盘那一下接到按半秒均价，没接到 1 秒后按腿2 新对手价重挂），每手、扣费前、按档；"
+            "判 ❌ 的也假设照样做了。交割月腿 = 有一条腿已进交割月（如 11 月的 cu2611），盘口薄、竞价只有几手，单独列、不算进实盘 / 回放那几行，"
+            "也不算进下面 sc 的 v1 对照。</p>")
+    return table(["来源", "判成", "根数", "实际真", "半真", "假", "反向", "说对了", "能不能开到说对了", "走了针几成（中位）", "走到一半以上",
+                  "程序版 成交", "程序版 平均档", "程序版 合计档", "首笔在区间里", "样本"],
+                 rows) + note + allin + versus_v1(s[~dlv], jd.MIX)
 
 
 def versus_v1(s: pd.DataFrame, mixed) -> str:

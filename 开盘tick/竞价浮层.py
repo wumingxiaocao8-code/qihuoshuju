@@ -9,8 +9,9 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
 每个格子贴一个标签，在「套利分析……」那一行的右边，不盖住图（针画在图的右边缘）：
   ✅ 大概率整根开到针附近（真）  ▲ 大概率开不到针、但离昨收有段距离（半真）  ❌ 大概率假
   ○ 没针  ？ 不判断
-标签左边并排一个小框，两行写两条腿的竞价成交手数：「sc2701 竞 15」= sc2701 竞价成交 15 手（黄）
-（10-24 晚去掉了卖一、买一的挂单手数：两年回放看过，对判断没用）。
+标签下面一个小框，两行写两条腿（上次主力、下主力）竞价量够不够他的手数：「sc2701 竞 少」（红）/ 正常（灰）/ 大（绿），
+竞价成交手数不到他「正常」手数 = 少，不到「波动大」手数 = 正常，否则大；手数见 LOTS，看板.txt 写「手数 sc = 4 6 10」可改
+（11-06 起，之前写手数；10-24 晚去掉了卖一、买一的挂单手数：两年回放看过，对判断没用）。
 大机会（竞价后立刻能成交那边偏出门槛 2 倍以上）时，sc、nr、fu、bu 跨月格子的符号后面多一个紫块「重3.6」（几倍门槛），
 再按情况加红框「腿2秒进」（主力竞价比腿1 动得少，腿2 晚两秒才进多半亏）、黄框「量少」（冷门腿竞价不到持仓 0.7‰）。
 浮层上一律写短（「首」「半」「腿2」），不写组合名；这几个块一律放第二行首笔区间前面，盘口框放在公式那一行下面（10-29 晚定：每格按品种名四个字、价差四位的最坏情况排，样子统一，见看板.txt 的「公式宽」）。
@@ -71,9 +72,18 @@ DEFAULTS = {"网格左": 19, "网格上": 47, "网格右": 0, "网格下": 20, "
 ROW_H = 17  # 公式那一行字的高度（博易云的像素），量字写到哪用；跟标签字号无关
 SECOND = (120, 200, 255)  # 标签第二行（首笔区间）浅蓝
 GREY = (170, 170, 170)  # 盘口框里的「竞」
-VOL = (235, 200, 80)  # 盘口框：竞价成交手数黄
+VOL = (235, 200, 80)  # 黄（量少框）
+# 11-06 他定的：盘口框不写竞价手数，写「少 / 正常 / 大」= 这条腿竞价成交手数跟他平常的手数（正常 / 波动大 / 非常大）比：
+# 不到「正常」= 少，到「正常」不到「波动大」= 正常，到「波动大」= 大（两年回放比过，这样分最准，见 分析/2026-11-06/竞价量平时/小结.md）。
+# 看板.txt 里写「手数 sc = 4 6 10」就用那边的；这里是他 11-06 给的数，没写的品种按 40 100 200。
+LOTS = {"sc": (4, 6, 10), "ag": (6, 12, 20), "cu": (10, 20, 40), "sn": (20, 60, 100), "ni": (20, 60, 100),
+        "rb": (50, 100, 200), "hc": (50, 100, 200), "ao": (40, 60, 80), "sp": (40, 60, 80),
+        **{p: (20, 40, 60) for p in ("nr", "br", "ru", "ss", "al", "zn", "pb")}}
+LOTS_DEFAULT = (40, 100, 200)
+LOT_COLORS = {"少": (235, 70, 70), "正常": (170, 170, 170), "大": (46, 170, 80)}
 TAG_COLORS = {"V重": (215, 40, 40), "V打": (35, 160, 75), "V小": (225, 160, 20), "V关": (95, 95, 95),  # 重 / 打 / 小 / 关 色块
-              "重": (150, 70, 225), "快": (235, 70, 70), "少": VOL, "薄": (235, 120, 20), "灰": MUTED}  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框；薄大 橙底白字（10-30，顶替重）
+              "重": (150, 70, 225), "快": (235, 70, 70), "少": VOL, "薄": (235, 120, 20), "灰": MUTED,
+              "针": (0, 160, 170)}  # 小针（11-06，fu）：青框  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框；薄大 橙底白字（10-30，顶替重）
 FILLED = ("重", "薄", "V重", "V打", "V小", "V关")  # 实心底、白字的样式
 HEAD_W, HEAD_H = 0.27, 15  # 比对用的标题条：格子宽度的前 27%、格子最上面 15 像素（合约名那一行；再宽会带进右边时间的第一个字）
 MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就算这格换了
@@ -188,8 +198,9 @@ gdi32.DeleteDC.argtypes = [wt.HDC]
 # ---------- 看板.txt ----------
 
 def read_board(f: Path = BOARD_FILE) -> dict:
-    """看板.txt：格子（一行一排，从左到右，「交易所.代码,交易所.代码」，空格子写 -）和位置参数（像素）。"""
-    rows, opts = [], dict(DEFAULTS)
+    """看板.txt：格子（一行一排，从左到右，「交易所.代码,交易所.代码」，空格子写 -）、位置参数（像素）
+    和他的手数（「手数 sc = 4 6 10」= 正常 / 波动大 / 非常大，盘口框分少 / 正常 / 大用）。"""
+    rows, opts, lots = [], dict(DEFAULTS), dict(LOTS)
     if f.exists():
         for line in f.read_text(encoding="utf-8").splitlines():
             line = line.split("#")[0].strip()
@@ -197,10 +208,18 @@ def read_board(f: Path = BOARD_FILE) -> dict:
                 continue
             if "=" in line:
                 k, v = (x.strip() for x in line.split("=", 1))
+                if k.startswith("手数"):
+                    try:
+                        n = tuple(float(x) for x in v.replace(",", " ").replace("，", " ").split())
+                    except ValueError:
+                        n = ()
+                    if len(n) >= 2:
+                        lots[k[2:].strip().lower()] = n
+                    continue
                 opts[k] = float(v)
             else:
                 rows.append(line.split())
-    board = {"格子": rows, "参数": opts}
+    board = {"格子": rows, "参数": opts, "手数": lots}
     try:  # --test 时量的每排格子实际在哪（博易云的格子不一定一样高）
         lines = json.loads((REF_DIR / "窗口.json").read_text(encoding="utf-8")).get("行线")
         if lines and len(lines) == len(rows) + 1:
@@ -355,7 +374,7 @@ DOWN = {"重": "打", "打": "小", "小": "小"}
 
 def verdict(key: str, kind: str, tags) -> tuple[str, str] | None:
     """浮层色块：(重 / 打 / 小 / 关, 原因)；没针、不判断返回 None（不贴色块，标签照老样子）。
-    规则照 分析/2026-10-31/有色开盘/小结.md 第 9 节的手数表，10-31 晚他定了两处：腿2秒进降一级；
+    规则照 分析/2026-10-31/有色开盘/小结.md 第 9 节的手数表，10-31 晚他定了两处：腿2秒进降一级（11-06 改成一律「小」，判 ❌、关的照旧关）；
     sc nr fu bu 和 ss br ao sp rb hc ru 不重也算「打」。只是线索，不是买卖建议。"""
     if kind in ("没针", "不判断"):
         return None
@@ -366,9 +385,13 @@ def verdict(key: str, kind: str, tags) -> tuple[str, str] | None:
     p = re.match(r"[a-z]+", key).group(0)
     if "薄大" in names:
         return "关", "薄大"
+    if "小针" in names:  # 11-06：针没出门槛、盘口托得远（fu），回放赚但实盘只见过 1 次，先小手数
+        return "小", "小针"
     if heavy is None:
         if "不重" in names or p in OFF_WHEN_LIGHT:
             return "关", "不重"
+        if "腿2秒进" in names:  # 11-06 起不重也可能贴腿2秒进：一律小
+            return "小", "不重·腿2秒进"
         return ("小" if p in SMALL_WHEN_LIGHT else "打"), "不重"
     why = [f"重{heavy:g}"]
     level = "重" if heavy >= 3 else "打"
@@ -377,9 +400,9 @@ def verdict(key: str, kind: str, tags) -> tuple[str, str] | None:
         level = DOWN[level] if level == "重" else level
     if p in CAP_NORMAL and level == "重":
         level = "打"
-    if "腿2秒进" in names:
-        why.append("腿2秒进↓")
-        level = DOWN[level]
+    if "腿2秒进" in names:  # 11-06 他定的：有腿2秒进一律「小」（以前是降一级，重 → 打）
+        why.append("腿2秒进")
+        level = "小"
     return level, "·".join(why)
 
 
@@ -417,25 +440,35 @@ def badge(d, kind: str, text: str, right: float, top: float, size: float, tags=(
         d.text((x, top + h * 1.5), second, font=f, fill=SECOND, anchor="lm")
 
 
-def book_cols(d, book, size: float) -> tuple[list, list]:
-    """盘口框每行的几段字 [(字, 颜色)] 和每一列的宽度（两行按「合约 / 竞 / 竞价手数」对齐）。
-    book = ((合约, 竞价手数), …)，一行一条腿；没有的写 —。上万手写成「3.4万」，框不会太宽。
+def lot_level(contract: str, v, lots: dict | None) -> str:
+    """这条腿竞价成交 v 手，跟他这个品种的手数比：少 / 正常 / 大；没收到写 —。"""
+    if v is None:
+        return "—"
+    m = re.match(r"[A-Za-z]+", contract)
+    n = (lots or LOTS).get(m.group().lower() if m else "", LOTS_DEFAULT)
+    return "少" if v < n[0] else "正常" if v < n[1] else "大"
+
+
+def book_cols(d, book, size: float, lots: dict | None = None) -> tuple[list, list]:
+    """盘口框每行的几段字 [(字, 颜色)] 和每一列的宽度（两行按「合约 / 竞 / 少正常大」对齐）。
+    book = ((合约, 竞价手数), …)，一行一条腿（腿1 次主力在上、腿2 主力在下）；11-06 起写「少 / 正常 / 大」（见 LOTS），不写手数。
     以前的 json 是 (合约, 竞价手数, 卖一量, 买一量)，更早的是 (合约, 卖一量, 买一量)：10-24 晚起只画竞价手数，挂单量不画。"""
-    def n(x):
-        return "—" if x is None else f"{x / 10000:.1f}万" if x >= 10000 else f"{x:.0f}"
     book = [(x[0], None if len(x) == 3 else x[1]) for x in book]
-    rows = [[(c, FG), (" 竞 ", GREY), (n(v), VOL)] for c, v in book]
+    rows = []
+    for c, v in book:
+        lv = lot_level(c, v, lots)
+        rows.append([(c, FG), (" 竞 ", GREY), (lv, LOT_COLORS.get(lv, MUTED))])
     f = font(size)
     return rows, [max(d.textlength(r[k][0], font=f) for r in rows) for k in range(3)]
 
 
-def book_width(d, book, size: float) -> float:
-    return sum(book_cols(d, book, size)[1]) + size
+def book_width(d, book, size: float, lots: dict | None = None) -> float:
+    return sum(book_cols(d, book, size, lots)[1]) + size
 
 
-def book_box(d, book, right: float, top: float, size: float) -> None:
-    """标签左边的盘口框：每条腿竞价成交几手，右上角对着 (right, top)。"""
-    rows, col = book_cols(d, book, size)
+def book_box(d, book, right: float, top: float, size: float, lots: dict | None = None) -> None:
+    """标签左边的盘口框：每条腿竞价量够不够他的手数（少 / 正常 / 大），右上角对着 (right, top)。"""
+    rows, col = book_cols(d, book, size, lots)
     f, lh, pad = font(size), size * 1.45, size * .5
     x0 = right - sum(col) - pad * 2
     d.rounded_rectangle([x0, top, right, top + lh * len(rows) + pad], radius=size * .3, fill=BG, outline=LINE,
@@ -443,7 +476,7 @@ def book_box(d, book, right: float, top: float, size: float) -> None:
     for r, parts in enumerate(rows):
         x, y = x0 + pad, top + pad / 2 + lh * (r + .5)
         for k, (t, c) in enumerate(parts):
-            d.text((x + (col[k] - d.textlength(t, font=f) if k == 2 else 0), y), t, font=f, fill=c, anchor="lm")
+            d.text((x, y), t, font=f, fill=c, anchor="lm")  # 11-06 起最后一列是「少 / 正常 / 大」，左对齐（以前手数右对齐）
             x += col[k]
 
 
@@ -471,7 +504,7 @@ def close_button(side: int):
 def scaled(board: dict, scale: float) -> dict:
     """位置参数乘倍数（博易云的像素 → 屏幕像素，或 → 缩小的截图）。"""
     p = {k: v * scale for k, v in board["参数"].items() if k != "倍数"}
-    out = {"格子": board["格子"], "参数": p | {"倍数": board["参数"].get("倍数", 1) * scale}}
+    out = {"格子": board["格子"], "参数": p | {"倍数": board["参数"].get("倍数", 1) * scale}, "手数": board.get("手数", LOTS)}
     if board.get("行线"):
         out["行线"] = [y * scale for y in board["行线"]]
     return out
@@ -516,7 +549,8 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
                 text = text.rstrip("\n")
                 badge(d, kind, text, left + badge_width(d, text, size, tags, False, lead), top, size, tags, False, lead)
                 if book:
-                    book_box(d, book, left + book_width(d, book, size), top + size * 1.5 * (2 if "\n" in text else 1) + size * .3, size)
+                    lots = b.get("手数")
+                    book_box(d, book, left + book_width(d, book, size, lots), top + size * 1.5 * (2 if "\n" in text else 1) + size * .3, size, lots)
                 continue
             first, *rest = text.split("\n", 1)
             if right - badge_width(d, first, size, lead=lead) < x0 + o["公式宽"]:  # 放不下：先把「半…」挪下去，没有「首」时挪「远…」（11-05 晚起第一行是「近… 远…」，挪的是「远…」）
@@ -531,7 +565,7 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
             left = right - badge_width(d, text, size, tags, down, lead)
             lefts[(i, j)] = right - row1_width(d, text, size, tags, down, lead)
             if book:
-                book_box(d, book, left - size * .6, top + ROW_H * o["倍数"], size)
+                book_box(d, book, left - size * .6, top + ROW_H * o["倍数"], size, b.get("手数"))
     if note and note.get("文字"):
         box = chip(d, note["文字"], rect[0] + o["提示左"], rect[1] + o["提示上"], o["提示字号"], note.get("红", False))
         if info is not None:
@@ -553,7 +587,7 @@ def sample_items(board: dict) -> dict:
         (kind, text), tags = SAMPLES[n % len(SAMPLES)], ()
         if product(s1) == product(s2) and product(s1) in TAG_SAMPLES:
             kind, (text, tags) = "半真", TAG_SAMPLES[product(s1)]
-        book = tuple((leg.split(".")[-1], 15 + 120 * k + n % 9) for k, leg in enumerate((s1, s2)))
+        book = tuple((leg.split(".")[-1], (5, 25, 300)[(n + k) % 3] * (1 + k)) for k, leg in enumerate((s1, s2)))  # 编的，少 / 正常 / 大轮着出
         out[pair_key(x)] = (kind, f"{label_name(s1, s2)}  {text}", book, tags)
     return out
 

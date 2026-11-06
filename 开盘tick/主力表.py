@@ -1,0 +1,99 @@
+"""主力 = 成交量最大的合约（11-06 小草定的，原来按持仓最大是错的）。
+
+开盘那一刻当天成交量还没出来，所以用「开盘前最近一个已收盘交易日」的全天成交量（含夜盘）：
+  夜盘 D 日 21:00 开盘 → 用 D 日的成交量；日盘 D 日 9:00 开盘 → 用 D 日之前最近一个交易日的。
+数据来自 期货数据/output/缓存/历史/kx_YYYYMMDD.dat.gz（上期所每日行情，含上期能源品种，futures_brief.py 下载的，2023-10 起）。
+已进交割月的合约不算（跟原来一样）。成交量一样时按持仓大的，再一样按月份早的。
+
+用法：
+  import 主力表
+  主力表.main_month("sc", pd.Timestamp("2026-11-05 21:00"))  → "2612"（交割月 YYMM），没数据返回 None
+  主力表.ranked("sc", 开盘时间) → [(交割月, 成交量, 持仓), …] 按成交量从大到小
+"""
+import datetime as dt
+import gzip
+import json
+import os
+from bisect import bisect_left
+from functools import lru_cache
+from pathlib import Path
+
+KX_DIR = Path(__file__).resolve().parent.parent / "output" / "缓存" / "历史"
+
+
+@lru_cache(maxsize=1)
+def _days() -> list[str]:
+    return sorted(p.name[3:11] for p in KX_DIR.glob("kx_*.dat.gz"))
+
+
+@lru_cache(maxsize=None)
+def _day(ds: str) -> dict[str, dict[str, tuple[float, float]]]:
+    """{品种: {交割月: (成交量, 持仓)}}，只要期货、不含已进交割月的。"""
+    try:
+        d = json.loads(gzip.open(KX_DIR / f"kx_{ds}.dat.gz").read())
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, dict[str, tuple[float, float]]] = {}
+    for x in d.get("o_curinstrument") or []:
+        c, m = str(x.get("PRODUCTGROUPID", "")).strip().lower(), str(x.get("DELIVERYMONTH", "")).strip()
+        if not c or not m.isdigit() or str(x.get("PRODUCTCLASS")) != "1" or m <= ds[2:6]:
+            continue
+        try:
+            out.setdefault(c, {})[m] = (float(x.get("VOLUME") or 0), float(x.get("OPENINTEREST") or 0))
+        except ValueError:
+            continue
+    return out
+
+
+def prev_day(when) -> str | None:
+    """开盘时间 → 用哪一天的成交量（YYYYMMDD）：夜盘（≥ 16 点）用当天，日盘用前一个交易日。"""
+    d = when.date() if hasattr(when, "date") else when
+    key = f"{d:%Y%m%d}"
+    days = _days()
+    i = bisect_left(days, key)  # days[i] >= key
+    if getattr(when, "hour", 0) >= 16 and i < len(days) and days[i] == key:
+        return key
+    return days[i - 1] if i > 0 else None
+
+
+def ranked(code: str, when) -> list[tuple[str, float, float]]:
+    ds = prev_day(when)
+    q = _day(ds).get(code.lower(), {}) if ds else {}
+    return sorted(((m, v, oi) for m, (v, oi) in q.items() if v > 0), key=lambda r: (-r[1], -r[2], r[0]))
+
+
+def main_month(code: str, when) -> str | None:
+    r = ranked(code, when)
+    return r[0][0] if r else None
+
+
+OLD_OI = os.environ.get("ZHULI_BY") == "oi"  # 对照用：ZHULI_BY=oi 时退回老办法（持仓最大），只给回放 A/B 对比
+MISSES: list = []  # 成交量主力不在候选合约里、退回持仓最大的 (品种, 开盘, 成交量主力)
+
+
+def pick(code: str, when, syms, fallback):
+    """候选合约（如 L2 的 'fu2701'、天勤的 'SHFE.fu2701'）里挑成交量主力；找不到（没数据 / 那个合约没 tick）退回 max(syms, key=fallback) 并记进 MISSES。"""
+    if OLD_OI:
+        return max(syms, key=fallback)
+    m = main_month(code, when)
+    hit = [s for s in syms if str(s)[-4:] == m]
+    if hit:
+        return hit[0]
+    MISSES.append((code, str(when), m))
+    return max(syms, key=fallback)
+
+
+def pick_after(code: str, when, syms, fallback=None):
+    """候选合约里成交量最大的那个（用来挑「主力后面成交量最大」的次主力）；都没成交量数据时返回 None。"""
+    if OLD_OI and fallback:
+        return max(syms, key=fallback)
+    vol = {m: v for m, v, _ in ranked(code, when)}
+    have = [s for s in syms if str(s)[-4:] in vol]
+    return max(have, key=lambda s: vol[str(s)[-4:]]) if have else None
+
+
+if __name__ == "__main__":
+    import sys
+    now = dt.datetime.now()
+    for c in sys.argv[1:] or ["sc", "cu"]:
+        print(c, prev_day(now), ranked(c, now)[:3])
