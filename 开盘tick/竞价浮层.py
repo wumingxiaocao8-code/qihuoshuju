@@ -83,7 +83,7 @@ LOTS_DEFAULT = (40, 100, 200)
 LOT_COLORS = {"少": (235, 70, 70), "正常": (170, 170, 170), "大": (46, 170, 80)}
 TAG_COLORS = {"V重": (215, 40, 40), "V打": (35, 160, 75), "V小": (225, 160, 20), "V关": (95, 95, 95),  # 重 / 打 / 小 / 关 色块
               "重": (150, 70, 225), "快": (235, 70, 70), "少": VOL, "薄": (235, 120, 20), "灰": MUTED,
-              "针": (0, 160, 170)}  # 小针（11-06，fu）：青框  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框；薄大 橙底白字（10-30，顶替重）
+              "针": (0, 160, 170), "换": (235, 70, 70)}  # 换月（11-07）：红框，跟腿2秒进一样（11-07 他定的，原来蓝框）  # 小针（11-06，fu）：青框  # 重仓标记：「重…」紫底白字、腿2秒进 红框、量少 黄框；薄大 橙底白字（10-30，顶替重）
 FILLED = ("重", "薄", "V重", "V打", "V小", "V关")  # 实心底、白字的样式
 HEAD_W, HEAD_H = 0.27, 15  # 比对用的标题条：格子宽度的前 27%、格子最上面 15 像素（合约名那一行；再宽会带进右边时间的第一个字）
 MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就算这格换了
@@ -93,8 +93,9 @@ QUIET = (3, 5)  # 开盘前 3 秒到开盘后 5 秒不截屏比对格子（标�
 SAMPLES = [("真", "首笔 -217.35  近 -195.22  远 -203.52\n首笔区间 (-221 ~ -196)"),  # 11-05 晚起有猜首笔的格子写「近」「远」（四位价差最长）
            ("半真", "首笔 -9.86  近 -3.57  远 -5.93\n首笔区间 (-12 ~ -4)"), ("假", "首笔 -1.44  近 -0.45  远 -0.82\n首笔区间 (-3 ~ 0)"),
            ("没针", "首笔 -11 ~ -9"), ("不判断", "竞价没成交")]
-TAG_SAMPLES = {"sc": ("首笔 -3.86  近 -7.17  远 -5.93\n首笔区间 (-6.5 ~ -3.1)", (("重3.1", "重"), ("腿2秒进", "快"))),  # --test 时 sc、nr 跨月格子贴带重仓标记的 ▲
-               "nr": ("首笔 -40 ~ -15", (("重2.3", "重"), ("量少", "少")))}
+TAG_SAMPLES = {"sc": ("首笔 -3.86  近 -7.17  远 -5.93\n首笔区间 (-6.5 ~ -3.1)", (("重3.1", "重"), ("腿2秒进！", "快"))),  # 11-07 演示「腿2！」；--test 时 sc、nr 跨月格子贴带重仓标记的 ▲
+               "nr": ("首笔 -40 ~ -15", (("重2.3", "重"), ("量少", "少"))),
+               "br": ("首笔 -95.0  远 -72.5\n首笔区间 (-110 ~ -60)",(("重2.6", "重"), ("换月", "换")))}
 
 # 用自己的一份 user32，设参数类型不影响同一进程里别的代码
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -313,9 +314,23 @@ def symbol(d, kind: str, x: float, y: float, s: float) -> None:
         d.text((x + s / 2, y + s / 2), "?", font=font(s), fill=c, anchor="mm")
 
 
+BANG_X = 0.85  # 标记末尾的「！」（腿2！、换月！）在浮层上画成一个红叉 ❌（跟判 ❌ 的符号一样画法），边长 = 字号 × 这个数
+# （11-07 他定的：原来是感叹号，放大了也不明显；网页和 csv 照写「！」）
+
+
+def split_bang(t: str) -> tuple[str, bool]:
+    """「换月！」→ ("换月", True)；没有感叹号 → (t, False)。"""
+    return (t[:-1], True) if t.endswith(("！", "!")) else (t, False)
+
+
+def tag_text_width(d, t: str, size: float) -> float:
+    body, bang = split_bang(t)
+    return d.textlength(body, font=bold(size)) + (size * (0.2 + BANG_X) if bang else 0)
+
+
 def tag_width(d, t: str, size: float) -> float:
     """一个重仓标记（「重3.6」「腿2秒进」「量少」）连同后面的空隙有多宽。"""
-    return d.textlength(t, font=bold(size)) + size * 1.0
+    return tag_text_width(d, t, size) + size * 1.0
 
 
 def badge_width(d, text: str, size: float, tags=(), down: bool = False, lead=()) -> float:
@@ -344,12 +359,24 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
             d.rounded_rectangle(box, radius=size * .25, fill=c)
         else:
             d.rounded_rectangle(box, radius=size * .25, outline=c, width=max(1, round(size / 9)))
-        d.text((x + tw / 2, mid), t, font=bold(size), fill=(255, 255, 255) if style in FILLED else c, anchor="mm")
+        fc = (255, 255, 255) if style in FILLED else c
+        body, bang = split_bang(t)
+        if bang:  # 感叹号换成红叉 ❌
+            x0 = x + (tw - tag_text_width(d, t, size)) / 2
+            d.text((x0, mid), body, font=bold(size), fill=fc, anchor="lm")
+            k = size * BANG_X
+            cx = x0 + d.textlength(body, font=bold(size)) + size * .2
+            w = max(2, round(size / 5))
+            xc = (255, 255, 255) if style in FILLED else COLORS["假"]
+            for (a1, b1), (a2, b2) in (((0, 0), (1, 1)), ((1, 0), (0, 1))):
+                d.line([(cx + k * a1, mid - k / 2 + k * b1), (cx + k * a2, mid - k / 2 + k * b2)], fill=xc, width=w)
+        else:
+            d.text((x + tw / 2, mid), t, font=bold(size), fill=fc, anchor="mm")
         x += tw + size * .3
     return x
 
 
-SHORT_TAGS = {"腿2秒进": "腿2"}  # 浮层上写短名（10-29 晚他定的），网页和 csv 还是全称
+SHORT_TAGS = {"腿2秒进": "腿2", "腿2秒进！": "腿2！"}  # 浮层上写短名（10-29 晚他定的），网页和 csv 还是全称；「腿2！」= 腿2 自己跳 ≥ 2 倍门槛（11-07），末尾「！」浮层画成红叉（BANG_X）
 SHOW_RANGE = False  # 浮层写不写首笔区间（10-31 晚他定的不写；想要回来改成 True）
 BELOW = True  # 11-02 夜他定的：标签（符号、半、远、重仓标记）放在公式那一行下面一行，竞价手数框再下面一行；False = 老排法（标签在公式那行右边）
 SHOW_GUESS = False  # 浮层写不写猜的首笔「首…」（11-02 夜他定的不写；11-05 晚起只留「近」和「远」，远 = 首笔半；网页和 csv 照写）
@@ -369,7 +396,9 @@ VERDICT = True  # 10-31 晚他定的：第一行符号后面贴一个小色块�
 SMALL_WHEN_LIGHT = ("al", "zn", "ag", "ni")  # 判 ✅▲ 但不重 → 小（有色两年回放：扣完费只剩 1–2.5 档）
 OFF_WHEN_LIGHT = ("cu", "sn", "pb")  # 判 ✅▲ 但不重 → 关（铜手续费 3.3 档、锡 2026 以后晚半秒就亏、铅量太少）
 CAP_NORMAL = ("pb",)  # 重了也只到「打」（铅首个半秒只有 1–2 手）
+OFF_WHEN_LEG2 = ("ru", "ag", "br", "cu")  # 11-06 他定的（cu 11-07 加：≥ 3 倍腿2秒进按他的大手数，正滑一半 / 全吃到 × 平仓一档 / 吃盘口四种都亏，见 测试/2026-11-07_重三倍腿2秒进/小结.md；br 11-07 加：br 专项持仓比 < 1 时腿2秒进正滑一半 −0.5 档、≥ 1 时 −3.3 档）：有「腿2秒进」→ 关（ru 专项：腿2秒进的针正滑一半每次 +0.1 / −0.7 / +0.3 档，基本白做，见 测试/2026-11-06_ru专项/小结.md；ag 专项：腿2 晚半秒主力走 16 档，2026 后不重 −15.8、重 −22.4 档，见 测试/2026-11-06_ag专项/小结.md）
 DOWN = {"重": "打", "打": "小", "小": "小"}
+ROLL_OFF_ANY = ("br",)  # 换月只占一条也关的品种（br 专项：持仓比 ≥ 1 时连重 ≥ 3 倍都亏），跟 竞价判断.ROLL_OFF 一致
 
 
 def verdict(key: str, kind: str, tags) -> tuple[str, str] | None:
@@ -380,11 +409,19 @@ def verdict(key: str, kind: str, tags) -> tuple[str, str] | None:
         return None
     if kind == "假":
         return "关", "判❌"
-    names = [t for t, _ in tags]
+    names = [t.rstrip("！") for t, _ in tags]  # 「腿2秒进！」只是字更重，色块照「腿2秒进」算
     heavy = next((float(t[1:]) for t in names if re.fullmatch(r"重\d+(\.\d+)?", t)), None)
     p = re.match(r"[a-z]+", key).group(0)
     if "薄大" in names:
         return "关", "薄大"
+    roll = next((t for t, _ in tags if t.startswith("换月")), None)
+    if roll:  # 11-07 换月分级（竞价判断.ROLL_ALL）：换月2 / 换月！→ 关；换月（只占持仓、成交量一条）→ 降一级；br 一条就关
+        if roll != "换月" or p in ROLL_OFF_ANY:
+            return "关", roll
+        v = verdict(key, kind, [x for x in tags if not x[0].startswith("换月")])
+        return (v if v is None or v[0] == "关" else (DOWN[v[0]], v[1] + "·换月"))
+    if "腿2秒进" in names and p in OFF_WHEN_LEG2:
+        return "关", "腿2秒进"
     if "小针" in names:  # 11-06：针没出门槛、盘口托得远（fu），回放赚但实盘只见过 1 次，先小手数
         return "小", "小针"
     if heavy is None:

@@ -107,6 +107,7 @@ MIX = {p: 0.9 for p in rv.NEEDLE_GATE}  # 第 2 步改成猜首笔 = 昨收价�
 # 混合版猜的首笔差门槛几档以内也算 ▲、不判 ❌（他定的：真针判成 ❌ 最怕，假针判成 ▲ 无所谓）：sc 5 档，别的品种按门槛的三分之一
 SLACK = {p: round(g / 3) for p, g in rv.NEEDLE_GATE.items()}
 NEAR = 0.2  # 浮层「近」= 昨收价差 + NEAR ×（猜首笔 − 昨收价差）（11-05 晚他定的：浮层只写「近」「远」，远 = 首笔半，原来的远档不上浮层；两年回放 18 个品种「重」的针挂 0.2 成都不比首笔半差，见 测试/2026-11-05_挂几成重跑/小结.md）
+NO_NEAR = ("ru", "br")  # 11-06 他定的（br 11-07 加：br 专项挂远 −0.2 档、挂近 −0.9 档）：这些品种浮层只写「远」（首笔半）、不写「近」（ru 专项：正滑一半口径挂近每次约 +0.2 档、挂远 +0.6–1.0 档，见 测试/2026-11-06_ru专项/小结.md）；csv 的「近」照算
 HALF = 0.5  # 标签上的「首笔半」= 昨收价差 + HALF ×（猜首笔 − 昨收价差）
 HALF_BY = {"ag": 1 / 3, "sn": 1 / 3, "ni": 1 / 3}  # 按品种另设（10-31 他定的）：ag、sn、ni 挂三分之一，两年回放比挂一半多赚 4–12%（腿2 晚半秒），判断不变
 # 远档（11-02 夜他定的，全部 18 个品种）：每组挂两张单，首笔半 n1 手 + 远档 n2 手；远档 = 昨收价差 + 系数 ×（猜首笔 − 昨收价差）。
@@ -125,11 +126,24 @@ HEAVY = 2.0  # 立刻能成交那边偏出门槛 2 倍以上 = 大机会：不�
 HEAVY_SHOW = ("sc", "nr", "fu", "bu", "ag", "cu", "al", "zn", "pb", "sn", "ni", "ao", "br", "sp", "rb", "hc", "ru", "ss", "nr-ru")  # 浮层只在这几个品种的格子上贴重仓标记（验过的：sc、nr 10-24，fu、bu 10-27，有色和 ao br sp rb hc ru ss 10-31 上期所两年回放，nr-ru 11-05 两年 L2：门槛 8 时重 22 次、每次约是不重的两倍），别的品种只记进 csv 和网页
 FEE_SKIP = ("cu",)  # 手续费贵、不重的扣完费几乎白干的品种：判 ✅▲ 但不重时浮层贴灰框「不重」（10-31，cu 一组开平约 3.3 档）
 RELAX = ("ag", "al", "zn", "pb", "br", "rb", "hc", "ao")  # 第 1 步只有「竞价量分 −1、盘口分 0」时不判 ❌，交给第 2 步（10-31 有色和 br rb hc ao 两年回放；cu、sp、ss、ru 不放，见文件开头）
-TAG_STYLE = {"腿2秒进": "快", "量少": "少", "不重": "灰", "小针": "针"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框、不重 灰框、小针 青框
+TAG_STYLE = {"腿2秒进": "快", "量少": "少", "不重": "灰", "小针": "针", "换月": "换"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框、不重 灰框、小针 青框、换月 红框（跟腿2秒进一样）
+# 换月（11-07 他定的，测试/2026-11-06_br专项/小结.md）：腿1 开盘前持仓 ÷ 腿2（主力）开盘前持仓 ≥ 这个数 = 持仓已经搬到后月、按成交量算的主力还没换过来，
+# 判 ✅▲ 的针贴红框「换月」、色块关。br 近两年判 ✅▲ 正滑一半：持仓比 < 1 +0.1 / +2.7 档，≥ 1 −1.3 / −1.8 档（2026 前 / 后），21 个换月周期 15 个亏，重 ≥ 3 倍也亏
+ROLL_OFF = {"br": 1.0}
+# 换月分级（11-07 他定的，测试/2026-11-07_换月腿2/小结.md）：所有同品种跨月格子看三条，都是开盘前就知道的：
+#   A 腿1 开盘前持仓 ≥ 腿2；B 腿1 上一交易日成交量 ≥ ROLL_VOL × 腿2；C 收盘回看主力缩量、次主力放量（各比前 ROLL_DAYS 个交易日均量少 / 多 ≥ ROLL_SHRINK）。
+#   A、B 只占一条 →「换月」，色块降一级；A、B 都有 →「换月2」，色块关；A、B、C 都有 →「换月！」，色块关；只有 C 不贴。br 照旧一条就关（ROLL_OFF）。
+#   两年 L2 18 品种判 ✅▲（程序版：挂首笔半、腿2 晚半秒、正滑一半，单位门槛几成）：0 条 −0.05、1 条 −0.26、2 条 −0.69、3 条 −0.86；换月时腿2 头半秒跑 ≥ 3 档 47%（平时 38%）。
+#   成交量用 output/缓存/历史/kx_*.dat.gz（17:30 仓储取数顺带下的，主力表.py 同一口径：夜盘用当天、日盘用前一交易日）。False = 只有 br 看持仓（老样子）
+ROLL_ALL = True
+ROLL_VOL, ROLL_SHRINK, ROLL_DAYS = 0.75, 0.2, 5
 # 小针（11-06 他定的，测试/2026-11-06_fu专项/小结.md）：针没出门槛，但竞价后立刻能成交那边顺着针偏 ≥ 这么多档 → 判 ▲、贴「小针」，色块「小」。
 # fu 两年回放（正滑一半、挂首笔半）：早 5 年每次 +1.9 档、近两年 +4.1 档（9 个季度全赚），约一周一次；偏 ≤ 4 档的怎么算都亏
 SMALL = {"fu": 12}
 LEG2_ALWAYS = True  # 11-06 他定的：「腿2秒进」不管针真假、重不重都贴（以前只跟着「重…」贴）；False = 回到老样子
+# 腿2秒进！（11-07 他定的，测试/2026-11-07_腿2秒进档位/小结.md）：腿2秒进且主力（腿2）竞价自己跳了 ≥ 这么多倍门槛 → 浮层写「腿2秒进！」（短名「腿2！」）。
+# 只改字，色块、手数照旧。两年回放这类针腿2 晚半秒平均少 8.2 档，别的腿2秒进只少 0.6 档；None = 不分
+LEG2_STRONG = 2.0
 # ---- 薄大（2026-10-30，分析/2026-10-26/腿2控价/小结.md 第 12、14 节）----
 BOOK_SHOW = ("sc",)  # 只有 sc 判薄大（nr、fu、bu、lu 回放里薄大不亏）
 THIN_STEP = 5  # 要吃那边第二档离第一档 ≥ 5 档 = 控价大（他定的）
@@ -151,7 +165,7 @@ CSV_COLS = ["开盘", "组合", "腿1", "腿2", "品种", "档", "符号", "首�
             "立刻能卖", "立刻能买", "托住几成", "盘口分", "合计", "保留比例下", "保留比例上", "保留比例依据", "腿1盘口宽档",
             "腿1竞价手数", "腿1卖一量", "腿1买一量", "腿2竞价手数", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源",
             "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "近", "首笔半",
-            "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大", "不重", "远档", "两层手数", "小针"]
+            "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大", "不重", "远档", "两层手数", "小针", "持仓比", "量比", "换月条件", "换月", "换月缺数"]
 
 
 # ---------- 判断（实盘、回放、开盘复盘共用） ----------
@@ -436,6 +450,25 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
                 j["不重"] = "不重"
                 j["理由"] = (j.get("理由", "") + f"；不重：{p1} 一组开平手续费约 3.3 档，两年回放不重的每手扣费后约 1 档、腿2 晚半秒就亏，"
                             "浮层贴灰框「不重」")
+        if p1 == p2 and not bad and (ROLL_ALL or p1 in ROLL_OFF):
+            try:
+                rc = roll_conds(p1, c1, c2, o, snaps.get(s1), snaps.get(s2))
+            except Exception as e:  # 换月只是加个标记，出错也不能耽误判断
+                rc = {"条件": [], "说明": [], "持仓比": None, "量比": None, "缺数": f"换月没算成（{type(e).__name__}）"}
+            j |= {k: rc[k] for k in ("持仓比", "量比") if rc.get(k) is not None}
+            if rc.get("缺数"):
+                j["换月缺数"] = rc["缺数"]
+                if j.get("档") in ("真", "半真"):
+                    j["理由"] = j.get("理由", "") + f"；{rc['缺数']}"
+            if rc["条件"]:
+                j["换月条件"] = "+".join(rc["条件"])
+            label = roll_label(rc["条件"]) if (ROLL_ALL or "A" in rc["条件"]) else None
+            if label and j.get("档") in ("真", "半真"):
+                j["换月"] = label
+                off = label != "换月" or p1 in ROLL_OFF
+                j["理由"] = (j.get("理由", "") + f"；{label}：" + "、".join(rc["说明"])
+                            + "，两年回放换月时判 ✅▲ 的针腿2 头半秒跑得多、现实成交偏亏（条件越多越亏），"
+                            + ("浮层色块关" if off else "浮层色块降一级"))
         if p1 == p2 and not bad:
             j |= leg2_book(j, snaps.get(s2), t, o, p1)
             if j.get("薄大"):
@@ -466,7 +499,8 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
                 row["远档"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * far[0], decimals(t) + 1)
                 row["两层手数"] = f"首笔半 {far[1]} 手 + 远档 {far[2]} 手"
         nd = decimals(t) + 1  # 11-05 晚起文字写「近 … 远 …」：近 = NEAR 成，远 = 首笔半（csv 的「远档」列照算、不进文字）
-        row["文字"] = (f"{name}  首笔 {guess}  近 {row['近']:.{nd}f}  远 {row['首笔半']:.{nd}f}\n"  # 两行：浮层把第二行写在下面
+        near = "" if key in NO_NEAR or "近" not in row else f"  近 {row['近']:.{nd}f}"
+        row["文字"] = (f"{name}  首笔 {guess}{near}  远 {row['首笔半']:.{nd}f}\n"  # 两行：浮层把第二行写在下面
                       f"首笔区间 ({price(rg[0], t)} ~ {price(rg[1], t)})" if rg and guess else
                       f"{name}  首笔 {price(rg[0], t)} ~ {price(rg[1], t)}" if rg else f"{name}  {j['理由']}")
         for n, s in (("腿1", s1), ("腿2", s2)):  # 竞价成交手数（浮层上标签左边的小框）和竞价后的盘口挂单手数（只记进 csv）
@@ -695,14 +729,91 @@ def tags_of(r: dict) -> list:
         out = []
     if r.get("小针") == "小针":
         out.append(["小针", TAG_STYLE["小针"]])
+    if r.get("换月") in ("换月", "换月2", "换月！"):
+        out.append([r["换月"], TAG_STYLE["换月"]])
     if LEG2_ALWAYS and leg2_slow(r) and "腿2秒进" not in [w for w, _ in out]:
         out.append(["腿2秒进", TAG_STYLE["腿2秒进"]])
+    if leg2_strong(r):
+        out = [["腿2秒进！", st] if w == "腿2秒进" else [w, st] for w, st in out]
     return out
+
+
+def oi_ratio(a: dict | None, b: dict | None) -> float | None:
+    """腿1 开盘前持仓 ÷ 腿2 开盘前持仓（开盘前持仓 = 竞价后持仓 − 持仓变化）；缺数返回 None。"""
+    pre = []
+    for x in (a, b):
+        if not x or x.get("持仓") is None or x.get("持仓变化") is None or x["持仓"] - x["持仓变化"] <= 0:
+            return None
+        pre.append(x["持仓"] - x["持仓变化"])
+    return pre[0] / pre[1]
+
+
+def roll_conds(p: str, c1: str, c2: str, o, a: dict | None, b: dict | None) -> dict:
+    """换月三条（见 ROLL_ALL）：{"条件": ["A", "B", "C" 里满足的], "说明": [...], "持仓比", "量比", "缺数"}；缺数的那条当不满足。
+    成交量只用这次开盘该用的那天（主力表.ref_day）；那天没下到就不用更早的冒充，B、C 记成未知、写进「缺数」（11-07 审查）。
+    读的是两条腿自己的量（主力表._raw，交割月还在交易的 cu2611 也有），不是挑主力那张去掉交割月的表。"""
+    import 主力表 as zl
+    out = {"条件": [], "说明": [], "持仓比": None, "量比": None, "缺数": ""}
+    m1, m2 = c1[-4:], c2[-4:]
+    ds, why = zl.ref_day(o)
+    if not ds:
+        out["缺数"] = f"换月 B、C 未知：{why}"
+    day = zl._raw(ds).get(p, {}) if ds else {}
+    v1, o1 = day.get(m1, (None, None))
+    v2, o2 = day.get(m2, (None, None))
+    ratio = oi_ratio(a, b)
+    if ratio is None and o1 and o2:
+        ratio = o1 / o2
+    if ratio is not None:
+        out["持仓比"] = round(ratio, 2)
+        if ratio >= 1:
+            out["条件"].append("A")
+            out["说明"].append(f"{c1} 开盘前持仓是 {c2} 的 {ratio:.2f} 倍")
+    if v1 is not None and v2:
+        out["量比"] = round(v1 / v2, 2)
+        if v1 / v2 >= ROLL_VOL:
+            out["条件"].append("B")
+            out["说明"].append(f"{ds} 成交量 {c1} 是 {c2} 的 {v1 / v2:.0%}")
+        days = zl._days()
+        if ds not in days:  # 刚在后台下好的
+            zl._days.cache_clear()
+            days = zl._days()
+        i = days.index(ds)
+        past = days[max(0, i - ROLL_DAYS):i]
+
+        def avg(m):
+            v = [zl._raw(d).get(p, {}).get(m, (None,))[0] for d in past]
+            v = [x for x in v if x is not None]
+            return sum(v) / len(v) if len(v) >= 3 else None
+        a1, a2 = avg(m1), avg(m2)
+        if a1 and a2 and v2 <= a2 * (1 - ROLL_SHRINK) and v1 >= a1 * (1 + ROLL_SHRINK):
+            out["条件"].append("C")
+            out["说明"].append(f"{ds} 收盘 {c2} 缩量到前 {ROLL_DAYS} 日均量的 {v2 / a2:.0%}、{c1} 放量到 {v1 / a1:.0%}")
+    return out
+
+
+def roll_label(conds: list) -> str | None:
+    """A、B 一条 → 换月；A、B 都有 → 换月2；三条都有 → 换月！；只有 C 或都没有 → None。"""
+    ab = sum(c in conds for c in ("A", "B"))
+    if ab == 0:
+        return None
+    if ab == 2:
+        return "换月！" if "C" in conds else "换月2"
+    return "换月"
 
 
 def leg2_slow(r: dict) -> bool:
     """有针（判了 ✅ ▲ ❌）且主力（腿2）竞价跳空比腿1 小。"""
     return r.get("档") in ("真", "半真", "假") and r.get("主力动得少") == True  # noqa: E712（csv 读回来是 numpy 布尔，NaN 也要当否）
+
+
+def leg2_strong(r: dict) -> bool:
+    """腿2秒进，且主力（腿2）竞价自己跳了 ≥ LEG2_STRONG 倍门槛：腿2 开盘那半秒多半还在跑，晚进吃亏最多。"""
+    g2, gate = r.get("腿2跳空档"), r.get("门槛")
+    try:
+        return LEG2_STRONG is not None and leg2_slow(r) and float(gate) > 0 and abs(float(g2)) >= LEG2_STRONG * float(gate)
+    except (TypeError, ValueError):
+        return False
 
 
 def counts(rows: list) -> str:
@@ -767,7 +878,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                     (r["重仓标记"] + ("" if r.get("品种") in HEAVY_SHOW else "（浮层不贴，只记录）")) if r.get("重仓标记") else
                     "不重（手续费贵，浮层贴灰框）" + ("、腿2秒进" if LEG2_ALWAYS and leg2_slow(r) else "") if r.get("不重") == "不重" else
                     "小针（针没出门槛、盘口托得远，浮层贴青框、色块小）" + ("、腿2秒进" if LEG2_ALWAYS and leg2_slow(r) else "") if r.get("小针") == "小针" else
-                    "腿2秒进（主力动得少）" if LEG2_ALWAYS and leg2_slow(r) else "",
+                    ("腿2秒进！（主力动得少、腿2 自己跳 ≥ 2 倍门槛）" if leg2_strong(r) else "腿2秒进（主力动得少）") if LEG2_ALWAYS and leg2_slow(r) else "",
                     ov.get(r["组合"], ""), rv.Raw(f"<span class='why'>{rv.esc(r.get('理由', ''))}</span>")])
     body.append(rv.table(["", "组合", "首笔区间", "猜首笔", "近（浮层「近」）", "首笔半（浮层「远」）", "远档", "两层手数", "昨收价差", "针", "针偏几档", "冷门腿竞价占持仓‰", "竞价后持仓变化",
                           "立刻能卖", "立刻能买", "托住针", "立刻能成交几倍门槛", "合计", "跳空档 腿1 / 主力", "重仓标记", "外盘", "理由"], tab))
@@ -1102,6 +1213,20 @@ def run_live(force: bool, overlay: bool) -> None:
     note = clock_note(skew)
     put(jf, state | {"状态": "等待", "红": False, "提示": f"竞价判断：等 {o - AUCTION:%H:%M}（正在连天勤{'；' + note if note else ''}）"})
     proc = start_overlay(jf) if overlay else None
+    if ROLL_ALL:  # 换月要上一交易日的成交量：后台补下上期所每日行情（同事版没有 17:30 仓储取数），不耽误连天勤；59 分时没下完就用已有的
+        import threading
+        import 主力表 as zl
+
+        def _fetch():
+            try:
+                res = zl.ensure(o)
+                ds, why = zl.ref_day(o)
+                tried = "；".join(f"{d} {st}" for d, st in res.items())
+                print(f"换月用的每日行情：用 {ds}" if ds else f"换月用的每日行情缺：{why}（换月 B、C 会记成未知）",
+                      (f"（这次试了：{tried}）" if tried else "（本来就齐）"), flush=True)
+            except Exception as e:
+                print(f"换月用的每日行情没下成（不影响判断，只是换月少看成交量那两条）：{type(e).__name__} {e}", flush=True)
+        threading.Thread(target=_fetch, daemon=True).start()
     try:
         res = live(o, board_and_list(), jf, state, page, skew)
         if res is None:
