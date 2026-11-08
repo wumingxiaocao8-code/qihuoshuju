@@ -321,14 +321,16 @@ BANG_X = 0.85  # 标记末尾的「！」（腿2！、换月！）在浮层上�
 # （11-07 他定的：原来是感叹号，放大了也不明显；网页和 csv 照写「！」）
 
 
-def split_bang(t: str) -> tuple[str, bool]:
-    """「换月！」→ ("换月", True)；没有感叹号 → (t, False)。"""
-    return (t[:-1], True) if t.endswith(("！", "!")) else (t, False)
+def split_bang(t: str) -> tuple[str, bool, str]:
+    """「换月！」→ ("换月", True, "")；「腿2！7.2」→ ("腿2", True, "7.2")（红叉后面接倍数）；没有感叹号 → (t, False, "")。"""
+    body, bang, tail = t.partition("！")
+    return (body, True, tail) if bang else (t[:-1], True, "") if t.endswith("!") else (t, False, "")
 
 
 def tag_text_width(d, t: str, size: float) -> float:
-    body, bang = split_bang(t)
-    return d.textlength(body, font=bold(size)) + (size * (0.2 + BANG_X) if bang else 0)
+    body, bang, tail = split_bang(t)
+    return (d.textlength(body, font=bold(size)) + (size * (0.2 + BANG_X) if bang else 0)
+            + (size * .2 + d.textlength(tail, font=bold(size)) if tail else 0))
 
 
 def tag_width(d, t: str, size: float) -> float:
@@ -363,7 +365,7 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
         else:
             d.rounded_rectangle(box, radius=size * .25, outline=c, width=max(1, round(size / 9)))
         fc = (255, 255, 255) if style in FILLED else c
-        body, bang = split_bang(t)
+        body, bang, tail = split_bang(t)
         if bang:  # 感叹号换成红叉 ❌
             x0 = x + (tw - tag_text_width(d, t, size)) / 2
             d.text((x0, mid), body, font=bold(size), fill=fc, anchor="lm")
@@ -373,6 +375,8 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
             xc = (255, 255, 255) if style in FILLED else COLORS["假"]
             for (a1, b1), (a2, b2) in (((0, 0), (1, 1)), ((1, 0), (0, 1))):
                 d.line([(cx + k * a1, mid - k / 2 + k * b1), (cx + k * a2, mid - k / 2 + k * b2)], fill=xc, width=w)
+            if tail:
+                d.text((cx + k + size * .2, mid), tail, font=bold(size), fill=fc, anchor="lm")
         else:
             d.text((x + tw / 2, mid), t, font=bold(size), fill=fc, anchor="mm")
         x += tw + size * .3
@@ -383,6 +387,14 @@ SHORT_TAGS = {"腿2秒进": "腿2", "腿2秒进！": "腿2！"}  # 浮层上写�
 SHOW_RANGE = False  # 浮层写不写首笔区间（10-31 晚他定的不写；想要回来改成 True）
 BELOW = True  # 11-02 夜他定的：标签（符号、半、远、重仓标记）放在公式那一行下面一行，竞价手数框再下面一行；False = 老排法（标签在公式那行右边）
 SHOW_GUESS = False  # 浮层写不写猜的首笔「首…」（11-02 夜他定的不写；11-05 晚起只留「近」和「远」，远 = 首笔半；网页和 csv 照写）
+
+
+def short_tag(t: str, leg2_times: float | None) -> str:
+    """标记的浮层写法：全称换短名，腿2 后面接倍数（11-08 他定的）：「腿2 1.3」「腿2！7.2」（「！」画成红叉）。老的 json 没有倍数，就只写短名。"""
+    s = SHORT_TAGS.get(t, t)
+    if t not in SHORT_TAGS or leg2_times is None:
+        return s
+    return f"{s}{leg2_times:.1f}" if s.endswith("！") else f"{s} {leg2_times:.1f}"
 
 
 def short(text: str) -> str:
@@ -570,6 +582,7 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
         if key in items and (show is None or (i, j) in show):
             kind, text, book, *more = items[key]
             tags = more[0] if more else ()
+            leg2_x = more[1] if len(more) > 1 else None
             right, top = x1 - o["标签右"], y0 + o["标签上"]
             # 10-29 晚他定的：每格都按最坏情况排（品种名四个字，如「合成橡胶2701-合成橡胶2612」，价差四位，如 -999），
             # 不按每格实际的字量，免得每格样子不一样：公式那一行写到离格子左边「公式宽」（看板.txt，博易云的像素）。
@@ -582,7 +595,7 @@ def draw(img, rect, board: dict, items: dict, note: dict | None, show: set | Non
             text = short(text)
             v = verdict(key, kind, tags) if VERDICT else None  # 「重 / 打 / 小 / 关」色块（要用全称的标记，放在缩短之前）
             lead = ((v[0], "V" + v[0]),) if v else ()
-            tags = tuple((SHORT_TAGS.get(t, t), st) for t, st in tags)
+            tags = tuple((short_tag(t, leg2_x), st) for t, st in tags)
             if BELOW:  # 11-02 夜他定的：标签放在「套利分析」公式那一行下面一行，左边跟「套」字对齐；竞价手数框再下面一行，也左对齐
                 top = top + (ROW_H + 3) * o["倍数"]  # 多空 3 像素，标签不压公式那行字
                 left = x0 + o.get("公式左", DEFAULTS["公式左"] * o["倍数"])  # 格子左边到「套」字（看板.txt，博易云的像素，11-02 夜量的 66）
@@ -633,8 +646,8 @@ def sample_items(board: dict) -> dict:
 
 
 def items_of(data: dict) -> tuple[dict, dict | None]:
-    """竞价判断.json → (要贴的标签 {组合: (档, 文字, 盘口, 重仓标记)}, 小提示)。"""
-    items = ({k: (v["档"], v["文字"], tuple(tuple(x) for x in v.get("盘口") or ()), tuple(tuple(x) for x in v.get("标记") or ()))
+    """竞价判断.json → (要贴的标签 {组合: (档, 文字, 盘口, 重仓标记, 腿2倍数)}, 小提示)。"""
+    items = ({k: (v["档"], v["文字"], tuple(tuple(x) for x in v.get("盘口") or ()), tuple(tuple(x) for x in v.get("标记") or ()), v.get("腿2倍"))
               for k, v in (data.get("组合") or {}).items()} if data.get("状态") == "结果" else {})
     return items, {"文字": data.get("提示", ""), "红": bool(data.get("红"))}
 

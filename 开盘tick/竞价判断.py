@@ -764,7 +764,7 @@ def put(f: Path, data: dict) -> None:
 
 def result_json(rows: list, state: dict, note: str, page: Path) -> dict:
     return state | {"状态": "结果", "红": False, "提示": note, "网页": str(page),
-                    "组合": {r["组合"]: {"档": r["档"], "符号": r["符号"], "文字": r["文字"], "盘口": book_of(r), "标记": tags_of(r)}
+                    "组合": {r["组合"]: {"档": r["档"], "符号": r["符号"], "文字": r["文字"], "盘口": book_of(r), "标记": tags_of(r), "腿2倍": leg2_times(r)}
                            for r in rows}}
 
 
@@ -882,6 +882,15 @@ def leg2_strong(r: dict) -> bool:
         return LEG2_STRONG is not None and leg2_slow(r) and float(gate) > 0 and abs(float(g2)) >= LEG2_STRONG * float(gate)
     except (TypeError, ValueError):
         return False
+
+
+def leg2_times(r: dict) -> float | None:
+    """贴腿2秒进的格子：主力竞价自己跳了几倍门槛（11-08 他定的，浮层写在腿2 后面，跟「重」一样往下取一位小数）；没贴返回 None。"""
+    g2, gate = r.get("腿2跳空档"), r.get("门槛")
+    try:
+        return math.floor(abs(float(g2)) / float(gate) * 10 + 1e-9) / 10 if leg2_slow(r) and float(gate) > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def counts(rows: list) -> str:

@@ -193,7 +193,8 @@ def pair(day: str, acct: str, skill, leg2: dict) -> dict:
     use = {p: leg2[p] for p in products if p in leg2}
     cross = cross_leg2(df, use)
     use |= cross
-    res = skill.analyze(str(norm), "utf-8-sig", {}, 0, bool(cross), use, False)
+    allow_cross = bool(cross) or any(prod(v) != p for p, v in use.items())  # --leg2 手动指定跨品种（如 nr=ru2701）也要打开
+    res = skill.analyze(str(norm), "utf-8-sig", {}, 0, allow_cross, use, False)
     (PAIRS / f"{day}_账号{acct}_配对.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     (PAIRS / f"{day}_账号{acct}_配对.md").write_text(skill.render_markdown(res), encoding="utf-8")
     return res
