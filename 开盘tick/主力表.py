@@ -58,6 +58,34 @@ def _day(ds: str) -> dict[str, dict[str, tuple[float, float]]]:
     return {c: {m: v for m, v in q.items() if m > ds[2:6]} for c, q in _raw(ds).items()}
 
 
+HOLIDAY_URL = "https://files.shinnytech.com/shinny_chinese_holiday.json"  # 天勤自己用的法定节假日表（工作日里不开盘的日子）
+HOLIDAY_FILE = KX_DIR / "休市日.json"
+
+
+@lru_cache(maxsize=None)
+def _holidays(year: int) -> frozenset | None:
+    """法定节假日（YYYYMMDD）。先读本地 休市日.json，没有或不含这一年就从天勤下一次存起来；都不行返回 None（不知道）。
+    11-07 版用「缓存里有更晚的日子」推断休市，分不清休市和漏下（11-08 审查），改用这张表。"""
+    def load(raw):
+        days = json.loads(raw)
+        return frozenset(d.replace("-", "") for d in days), int(days[-1][:4])
+    try:
+        got = load(HOLIDAY_FILE.read_text(encoding="utf-8"))
+        if got[1] >= year:
+            return got[0]
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        with urllib.request.urlopen(urllib.request.Request(HOLIDAY_URL, headers={"User-Agent": UA}), timeout=5) as r:
+            raw = r.read().decode("utf-8")
+        got = load(raw)
+        KX_DIR.mkdir(parents=True, exist_ok=True)
+        HOLIDAY_FILE.write_text(raw, encoding="utf-8")
+        return got[0] if got[1] >= year else None
+    except Exception:
+        return None
+
+
 STATUS: dict[str, str] = {}  # 这次运行里 fetch 过的日子：{YYYYMMDD: "已有" / "新下" / "休市" / "还没结算价" / "下载失败（…）"}
 
 
@@ -117,10 +145,9 @@ def ensure(when, back: int = 14) -> dict[str, str]:
 
 def ref_day(when, back: int = 14) -> tuple[str | None, str]:
     """这次开盘「应该」用哪天的每日行情：(YYYYMMDD, "")；该用的那天没有就是 (None, 为什么)，不拿更早的日子冒充（11-07 审查）。
-    从 _start 往前一个个工作日看：缓存里有 → 就是它；没有但确定休市（交易所回过 404，或缓存里有更晚的日子 = 历史回放时那天休市）→ 再往前；
-    别的情况（下载失败、还没结算价、后台还没下完）→ 不知道。"""
+    从 _start 往前一个个工作日看：缓存里有 → 就是它；没有但确定休市（交易所回过 404，或在法定节假日表里）→ 再往前；
+    别的情况（下载失败、漏下、还没结算价、后台还没下完、节假日表取不到）→ 不知道。"""
     start = _start(when)
-    days = _days()
     for i in range(back):
         x = start - dt.timedelta(days=i)
         ds = f"{x:%Y%m%d}"
@@ -129,7 +156,7 @@ def ref_day(when, back: int = 14) -> tuple[str | None, str]:
         if (KX_DIR / f"kx_{ds}.dat.gz").exists():
             return ds, ""
         st = STATUS.get(ds)
-        if st == "休市" or (st is None and days and days[-1] > ds):
+        if st == "休市" or ds in (_holidays(x.year) or ()):
             continue
         return None, f"{ds} 的每日行情{st or '还没下到'}"
     return None, f"往前 {back} 天都没有每日行情"

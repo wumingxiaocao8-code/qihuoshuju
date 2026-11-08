@@ -27,6 +27,9 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
   python 竞价浮层.py --mock 截图.png    不开窗口，把标签画在一张博易云全屏截图上，存成「截图_浮层.png」
                                        （加 --json 某次开盘的 竞价判断.json 用那次的判断，不加用样例）
   python 竞价浮层.py --json 某个.json --no-check   预览用：不跟 --test 存的样子比，露在外面的格子都贴（看板换了图时会贴错格子）
+  python 竞价浮层.py --json 数据/某次开盘/竞价判断.json --preview [--hold 60]
+                                       重看过去某次的判断：不管 json 里的「显示到」（不然一打开就过期退出），
+                                       格子不比（同 --no-check），贴 --hold 秒（默认 20）后消失（11-08 同事版审查）
 """
 import argparse
 import ctypes
@@ -920,7 +923,7 @@ def stop_key() -> None:
     threading.Thread(target=wait, daemon=True).start()
 
 
-def run(json_file: Path | None, test: bool = False, hold: float = 20, check: bool = True) -> None:
+def run(json_file: Path | None, test: bool = False, hold: float = 20, check: bool = True, preview: bool = False) -> None:
     """浮层：盖住博易云所在的那块屏幕，透明、点不到、不抢焦点；每 0.25 秒看一次 json 和博易云窗口，有变化再重画。"""
     dpi_aware()
     stop_key()
@@ -973,8 +976,8 @@ def run(json_file: Path | None, test: bool = False, hold: float = 20, check: boo
                 pass
         data = st["data"]
         until = data.get("显示到")
-        if (test and now - t0 > hold) or now - t0 > LIFE or data.get("状态") == "没开盘" or (
-                until and datetime.now() >= datetime.strptime(until, "%Y-%m-%d %H:%M:%S")):
+        if ((test or preview) and now - t0 > hold) or now - t0 > LIFE or data.get("状态") == "没开盘" or (
+                until and not preview and datetime.now() >= datetime.strptime(until, "%Y-%m-%d %H:%M:%S")):
             return False
         if now >= st["next_find"]:  # 每秒：博易云挪没挪、哪些格子露在外面，浮层保持在最上面
             st["next_find"] = now + 1
@@ -1070,10 +1073,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--json", help="竞价判断.py 写的 竞价判断.json")
     p.add_argument("--test", action="store_true", help="每格贴样例标签、存下格子的样子")
-    p.add_argument("--hold", type=float, default=20, help="--test 时标签留几秒")
+    p.add_argument("--hold", type=float, default=20, help="--test / --preview 时标签留几秒")
     p.add_argument("--mock", help="把标签画在这张截图上，不开窗口")
     p.add_argument("--out", help="--mock 存到哪")
     p.add_argument("--no-check", action="store_true", help="预览用：不跟 --test 存的样子比，格子都贴")
+    p.add_argument("--preview", action="store_true", help="重看过去某次的 竞价判断.json：不管「显示到」、格子不比，贴 --hold 秒")
     a = p.parse_args()
     if a.mock:
         print(f"画好了：{mock(Path(a.mock), Path(a.json) if a.json else None, Path(a.out) if a.out else None)}")
@@ -1081,11 +1085,13 @@ def main():
     if not a.test and not a.json:
         p.error("要么 --test，要么 --json（平时由 竞价判断.py 带起来）")
     hm = datetime.now().strftime("%H:%M")
-    if a.test and ("20:56" <= hm < "21:02" or "08:56" <= hm < "09:02"):  # 11-02 夜：20:57 跑 --test，点它的 × 把正式浮层也关了
-        print("正式浮层这几分钟开着（20:56–21:02、8:56–9:02），--test 的 × 和它叠在一起，点了会把正式的也关掉：过了 21:02 / 9:02 再跑")
+    if a.preview and not a.json:
+        p.error("--preview 要配 --json 某次开盘的 竞价判断.json")
+    if (a.test or a.preview) and ("20:56" <= hm < "21:02" or "08:56" <= hm < "09:02"):  # 11-02 夜：20:57 跑 --test，点它的 × 把正式浮层也关了
+        print("正式浮层这几分钟开着（20:56–21:02、8:56–9:02），--test / --preview 的 × 和它叠在一起，点了会把正式的也关掉：过了 21:02 / 9:02 再跑")
         return
     try:
-        run(Path(a.json) if a.json else None, a.test, a.hold, not a.no_check)
+        run(Path(a.json) if a.json else None, a.test, a.hold, not (a.no_check or a.preview), a.preview)
     except Exception as e:
         import traceback
         print(f"竞价浮层出错：{type(e).__name__} {e}\n{traceback.format_exc()}")
