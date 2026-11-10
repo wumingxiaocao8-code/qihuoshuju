@@ -8,7 +8,7 @@ Windows 把它整个放大（这台电脑 150%），贴的时候自动乘上这�
 
 每个格子贴一个标签，在「套利分析……」那一行的右边，不盖住图（针画在图的右边缘）：
   ✅ 大概率整根开到针附近（真）  ▲ 大概率开不到针、但离昨收有段距离（半真）  ❌ 大概率假
-  ○ 没针  ？ 不判断
+  ○ 没针  ？ 不判断（11-10 起有腿进了交割月的格子也是 ？，后面贴灰框「交割月」：竞价判断.tags_of 给的标记，色块 verdict 照旧返回 None）
 标签下面一个小框，两行写两条腿（上次主力、下主力）竞价量够不够他的手数：「sc2701 竞 少」（红）/ 正常（灰）/ 大（绿），
 竞价成交手数不到他「正常」手数 = 少，不到「波动大」手数 = 正常，否则大；手数见 LOTS，看板.txt 写「手数 sc = 4 6 10」可改
 （11-06 起，之前写手数；10-24 晚去掉了卖一、买一的挂单手数：两年回放看过，对判断没用）。
@@ -93,12 +93,12 @@ MISMATCH = 0.06  # 标题条跟存的样子有超过 6% 的像素对不上，就
 GAP = 8  # 标签左边离公式那行字至少空 8 像素；放不下全名就去掉组合名，不盖住公式后面的价差数
 LIFE = 600  # 最多开 10 分钟（竞价判断.py 出意外没写结果时，浮层自己关掉）
 QUIET = (3, 5)  # 开盘前 3 秒到开盘后 5 秒不截屏比对格子（标签照样显示），不跟开盘那一下抢电脑
-SAMPLES = [("真", "首笔 -217.35  近 -195.22  远 -203.52\n首笔区间 (-221 ~ -196)"),  # 11-05 晚起有猜首笔的格子写「近」「远」（四位价差最长）
-           ("半真", "首笔 -9.86  近 -3.57  远 -5.93\n首笔区间 (-12 ~ -4)"), ("假", "首笔 -1.44  近 -0.45  远 -0.82\n首笔区间 (-3 ~ 0)"),
+SAMPLES = [("真", "首笔 -217.35  首笔估 -203.52\n首笔区间 (-221 ~ -196)"),  # 11-09 起有猜首笔的格子只写「首笔估」（四位价差最长）
+           ("半真", "首笔 -9.86  首笔估 -5.93\n首笔区间 (-12 ~ -4)"), ("假", "首笔 -1.44  首笔估 -0.82\n首笔区间 (-3 ~ 0)"),
            ("没针", "首笔 -11 ~ -9"), ("不判断", "竞价没成交")]
-TAG_SAMPLES = {"sc": ("首笔 -3.86  近 -7.17  远 -5.93\n首笔区间 (-6.5 ~ -3.1)", (("重3.1", "重"), ("腿2秒进！", "快"))),  # 11-07 演示「腿2！」；--test 时 sc、nr 跨月格子贴带重仓标记的 ▲
+TAG_SAMPLES = {"sc": ("首笔 -3.86  首笔估 -5.93\n首笔区间 (-6.5 ~ -3.1)", (("重3.1", "重"), ("腿2秒进！", "快"))),  # 11-07 演示「腿2！」；--test 时 sc、nr 跨月格子贴带重仓标记的 ▲
                "nr": ("首笔 -40 ~ -15", (("重2.3", "重"), ("量少", "少"))),
-               "br": ("首笔 -95.0  远 -72.5\n首笔区间 (-110 ~ -60)",(("重2.6", "重"), ("换月", "换")))}
+               "br": ("首笔 -95.0  首笔估 -72.5\n首笔区间 (-110 ~ -60)",(("重2.6", "重"), ("换月", "换")))}
 
 # 用自己的一份 user32，设参数类型不影响同一进程里别的代码
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -220,7 +220,10 @@ def read_board(f: Path = BOARD_FILE) -> dict:
                     if len(n) >= 2:
                         lots[k[2:].strip().lower()] = n
                     continue
-                opts[k] = float(v)
+                try:
+                    opts[k] = float(v)
+                except ValueError:  # 「只认路径 = 东证」这种文字设置，原样存着
+                    opts[k] = v
             else:
                 rows.append(line.split())
     board = {"格子": rows, "参数": opts, "手数": lots}
@@ -386,7 +389,7 @@ def draw_tags(d, tags, x: float, mid: float, h: float, size: float) -> float:
 SHORT_TAGS = {"腿2秒进": "腿2", "腿2秒进！": "腿2！"}  # 浮层上写短名（10-29 晚他定的），网页和 csv 还是全称；「腿2！」= 腿2 自己跳 ≥ 2 倍门槛（11-07），末尾「！」浮层画成红叉（BANG_X）
 SHOW_RANGE = False  # 浮层写不写首笔区间（10-31 晚他定的不写；想要回来改成 True）
 BELOW = True  # 11-02 夜他定的：标签（符号、半、远、重仓标记）放在公式那一行下面一行，竞价手数框再下面一行；False = 老排法（标签在公式那行右边）
-SHOW_GUESS = False  # 浮层写不写猜的首笔「首…」（11-02 夜他定的不写；11-05 晚起只留「近」和「远」，远 = 首笔半；网页和 csv 照写）
+SHOW_GUESS = False  # 浮层写不写猜的首笔「首…」（11-02 夜他定的不写；11-09 起只留「首笔估」= 首笔半；网页和 csv 照写）
 
 
 def short_tag(t: str, leg2_times: float | None) -> str:
@@ -398,12 +401,12 @@ def short_tag(t: str, leg2_times: float | None) -> str:
 
 
 def short(text: str) -> str:
-    """浮层标签第一行写短：「首笔 423.2  近 430.1  远 442.1」→「近430.1 远442.1」（SHOW_GUESS = True 时前面留「首423.2」；
-    老格式的「首笔半」写成「半」）；第二行「首笔区间」不动。"""
+    """浮层标签第一行写短：「首笔 423.2  首笔估 442.1」→「首笔估442.1」（SHOW_GUESS = True 时前面留「首423.2」；
+    --preview 看老的 json 时，「首笔半」写成「半」，「近」「远」照老样子）；第二行「首笔区间」不动。"""
     first, *rest = text.split("\n", 1)
     if not SHOW_GUESS:
         first = re.sub(r"首笔 (?!\S+ ~)\S+\s*", "", first)  # 只有区间的「首笔 a ~ b」（SHOW_RANGE）不动
-    first = first.replace("首笔半 ", "半").replace("近 ", "近").replace("远 ", "远").replace("首笔 ", "首").replace("  ", " ")
+    first = first.replace("首笔估 ", "首笔估").replace("首笔半 ", "半").replace("近 ", "近").replace("远 ", "远").replace("首笔 ", "首").replace("  ", " ")
     return "\n".join([first] + rest)
 
 
@@ -555,7 +558,7 @@ def close_button(side: int):
 
 def scaled(board: dict, scale: float) -> dict:
     """位置参数乘倍数（博易云的像素 → 屏幕像素，或 → 缩小的截图）。"""
-    p = {k: v * scale for k, v in board["参数"].items() if k != "倍数"}
+    p = {k: v * scale if isinstance(v, float | int) and k != "对不上容差" else v for k, v in board["参数"].items() if k != "倍数"}  # 文字设置和比例不乘
     out = {"格子": board["格子"], "参数": p | {"倍数": board["参数"].get("倍数", 1) * scale}, "手数": board.get("手数", LOTS)}
     if board.get("行线"):
         out["行线"] = [y * scale for y in board["行线"]]
@@ -693,8 +696,9 @@ def client_rect(h) -> tuple | None:
     return p.x, p.y, p.x + r.right, p.y + r.bottom
 
 
-def find_pobo() -> tuple | None:
-    """博易云的主窗口：pobo.exe 里可见、没最小化、最大的那个。返回 (hwnd, 窗口里面的屏幕坐标)；没开或最小化了返回 None。"""
+def find_pobo(only: str = "") -> tuple | None:
+    """博易云的主窗口：pobo.exe 里可见、没最小化、最大的那个。返回 (hwnd, 窗口里面的屏幕坐标)；没开或最小化了返回 None。
+    only = 看板.txt 的「只认路径」：装了几家期货公司的博易云时，只认 pobo.exe 完整路径里含这几个字的。"""
     found, names = [], {}
 
     @WNDENUMPROC
@@ -704,8 +708,8 @@ def find_pobo() -> tuple | None:
         pid = wt.DWORD()
         user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
         if pid.value not in names:
-            names[pid.value] = os.path.basename(exe_name(pid.value)).lower()
-        if names[pid.value] == "pobo.exe":
+            names[pid.value] = exe_name(pid.value).lower()
+        if os.path.basename(names[pid.value]) == "pobo.exe" and str(only).lower() in names[pid.value]:
             r = client_rect(h)
             if r and (r[2] - r[0]) * (r[3] - r[1]) > 400 * 300:
                 found.append((h, r))
@@ -797,8 +801,8 @@ def save_refs(shot, rect, board: dict, lines: list | None = None) -> int:
     return len(keys)
 
 
-def same(a, b) -> bool:
-    """两张标题条是不是同一个：只看字（亮的像素），底色变了（选中的格子标题会变色）也认得出。"""
+def same(a, b, tol: float = MISMATCH) -> bool:
+    """两张标题条是不是同一个：只看字（亮的像素），底色变了（选中的格子标题会变色）也认得出。tol = 允许多少比例的像素对不上。"""
     import numpy as np
     if abs(a.width - b.width) > 2 or abs(a.height - b.height) > 2:
         return False
@@ -806,7 +810,7 @@ def same(a, b) -> bool:
     h, w = min(x.shape[0], y.shape[0]) - 2, min(x.shape[1], y.shape[1]) - 2  # 大小差一两个像素（取整）就按小的那个比
     # 上下左右各容许错开 1 像素（行线有小数，取整后位置可能差 1 像素，细笔画的字一错开就对不上了）
     return min(float((x[1:1 + h, 1:1 + w] != y[1 + dy:1 + dy + h, 1 + dx:1 + dx + w]).mean())
-               for dy in (-1, 0, 1) for dx in (-1, 0, 1)) <= MISMATCH
+               for dy in (-1, 0, 1) for dx in (-1, 0, 1)) <= tol
 
 
 def check_layout(shot, rect, board: dict, vis: set | None = None) -> tuple[set | None, str]:
@@ -824,7 +828,7 @@ def check_layout(shot, rect, board: dict, vis: set | None = None) -> tuple[set |
             continue
         ref = REF_DIR / f"{cell_name(i, j)}.png"
         if (ref.exists() and meta.get("格子", {}).get(cell_name(i, j)) == pair_key(board["格子"][i][j])
-                and same(shot.crop(box), Image.open(ref))):
+                and same(shot.crop(box), Image.open(ref), board["参数"].get("对不上容差", MISMATCH))):
             ok.add((i, j))
         else:
             bad.append(cell_name(i, j))
@@ -941,7 +945,8 @@ def run(json_file: Path | None, test: bool = False, hold: float = 20, check: boo
     dpi_aware()
     stop_key()
     raw = read_board()
-    pobo = find_pobo()
+    only = raw["参数"].get("只认路径", "")
+    pobo = find_pobo(only)
     board = scaled(raw, dpi_ratio(pobo[0]) if pobo else 1.0)
     shot = None
     if test:
@@ -994,7 +999,7 @@ def run(json_file: Path | None, test: bool = False, hold: float = 20, check: boo
             return False
         if now >= st["next_find"]:  # 每秒：博易云挪没挪、哪些格子露在外面，浮层保持在最上面
             st["next_find"] = now + 1
-            st["pobo"] = find_pobo()
+            st["pobo"] = find_pobo(only)
             if st["pobo"]:
                 st["board"] = scaled(raw, dpi_ratio(st["pobo"][0]))
                 vis = visible_cells(st["pobo"][0], st["pobo"][1], st["board"])

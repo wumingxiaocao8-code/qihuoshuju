@@ -43,6 +43,25 @@ LOG_FILE = HERE / "运行日志.txt"
 if sys.stdout is None:  # 任务计划用 pythonw 运行，没有控制台，输出写进运行日志
     sys.stdout = sys.stderr = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
 
+
+def start_selfcheck() -> None:
+    """开盘前体检（11-10 加，自检.py）：在 import 项目模块之前，后台带起 自检.py 试 import 线上脚本，不等它（约 2–3 秒）。
+    失败它自己写日志、弹通知；这样即使下面 import 开盘复盘 之类失败、本脚本崩了，通知也照样弹。回放（--at）不跑；带不起来也不耽误预估。"""
+    if "--at" in sys.argv:
+        return
+    try:
+        exe = Path(sys.executable).with_name("pythonw.exe")
+        subprocess.Popen([str(exe if exe.exists() else sys.executable), str(HERE / "自检.py"),
+                          "--来自", "开盘预估" + (" --prep" if "--prep" in sys.argv else "")],
+                         cwd=HERE, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"自检没带起来（{type(e).__name__} {e}），预估照跑")
+
+
+if __name__ == "__main__":  # 只在直接跑本脚本时：竞价判断、套利盘口录制、自检.py 自己 import 本文件时不跑（不然自检会一直带起自检）
+    start_selfcheck()
+
 import 开盘tick as tick  # noqa: E402  天勤连接、合约清单、1 分钟线取昨收（顺带加载日记库环境里的包）
 import 开盘复盘 as rv  # noqa: E402  分档、系数、过去的针
 import 外盘涨跌 as wp  # noqa: E402  外盘数据源

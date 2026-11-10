@@ -124,6 +124,9 @@ def normalize(src: Path, day: str, dst: Path) -> None:
     df["买卖"] = df["买卖"].str.replace("　", "").str.strip()
     for c in df.columns:
         df[c] = df[c].str.strip()
+    if "成交编号" not in df.columns and "报单编号" in df.columns:  # 11-09 B 号导出没有成交编号：同一秒按报单编号（编号小的先，他 11-08 确认的），文件行序会把腿2 排到腿1 前面
+        order = pd.to_numeric(df["报单编号"], errors="coerce")
+        df = df.assign(_报单=order).sort_values(["成交时间", "_报单"], kind="stable", na_position="last").drop(columns="_报单")
     dst.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(dst, index=False, encoding="utf-8-sig")
 
@@ -591,6 +594,11 @@ def main():
     for acct, res in results.items():
         print(f"账号{acct}：配对 {len(res['交易明细'])} 笔、没平 {len(res['未平仓组合'])} 笔、没配上 {len(res['异常'])} 条")
     print(f"网页：{f}")
+    try:  # 11-10：顺带更新真钱按色块对账（色块对账.py → 成交/复盘网页/色块对账.html），出错只打印，不影响上面的复盘
+        import 色块对账
+        print(f"色块对账：{色块对账.run()}")
+    except Exception as e:  # noqa: BLE001
+        print(f"色块对账没更新（不影响成交复盘）：{e!r}")
 
 
 if __name__ == "__main__":

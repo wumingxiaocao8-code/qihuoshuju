@@ -43,8 +43,8 @@ if VENV_SITE.exists():
 import pandas as pd  # noqa: E402
 from tqsdk import TqApi, TqAuth  # noqa: E402
 
-import 外盘涨跌  # noqa: E402  休市期间的外盘涨跌，跟开盘 tick 一起取
-import 开盘复盘  # noqa: E402  开盘那一针记一行、对答案、出记分卡
+# 外盘涨跌、开盘复盘 11-10 起用到时才 import（save_closes、main 的 finally）：11-10 早 9:03 开盘复盘.py 一个名字写错，
+# 这里一 import 就崩，整场 tick 没取。现在它们 import 失败只打印，取 tick 照样跑（竞价判断等别的文件都是自己 import 它们，不经过这里）
 
 OPENS = ["21:00:00", "09:00:00"]  # 夜盘、日盘开盘；竞价那张快照在开盘前一分钟内
 CLOSE_HEAD = ["合约", "收盘价", "收盘时间", "到期日", "最小变动价位", "合约乘数"]
@@ -162,6 +162,7 @@ def contract_info(api: TqApi, symbol: str) -> dict:
 def save_closes(info: dict, out: Path) -> None:
     """每个开盘文件夹存一份「收盘价.csv」：文件夹里有 tick 的合约，开盘前国内最后一次收盘的价。
     已经记过的合约不再改；1 分钟线够得着的旧文件夹也补上。"""
+    import 外盘涨跌  # 读写 csv 的小工具在这里（11-10 起用到时才 import，见文件开头）
     for folder in sorted(out.glob("????-??-??_????")):
         open_ts = datetime.strptime(folder.name, "%Y-%m-%d_%H%M")
         f = folder / "收盘价.csv"
@@ -239,7 +240,21 @@ def save_ticks(items: list[str], seconds: int, out: Path) -> None:
             note = "" if whole else "，⚠ 不完整"
             print(f"价差 {s1}-{s2} {open_ts:%m-%d %H:%M}：{save(w, out / f'{open_ts:%Y-%m-%d_%H%M}' / f'价差_{s1}-{s2}.csv')}{note}")
 
-    save_closes(info, out)
+    try:  # tick 和价差上面已经存好了；昨收出错（含 外盘涨跌 import 失败）只打印（11-10）
+        save_closes(info, out)
+    except Exception as e:
+        print(f"收盘价没存成（{type(e).__name__} {e}），tick 已存好")
+
+
+def after_ticks(name: str, out: Path) -> None:
+    """取完 tick 之后的一步（外盘涨跌.run / 开盘复盘.run）：用到时才 import，import 或运行出错只打印最后几行，不影响已存的 tick（11-10）。"""
+    try:
+        mod = __import__(name)
+        mod.run(out)
+    except Exception as e:
+        import traceback
+        tail = "".join(traceback.format_exception(e)[-3:]).rstrip()
+        print(f"{name} 没跑成（{type(e).__name__} {e}），tick 已存好，可以手动再跑 {name}.py：\n{tail}")
 
 
 def main():
@@ -253,8 +268,8 @@ def main():
     try:
         save_ticks(args.symbols or read_list(), args.seconds, out)
     finally:
-        外盘涨跌.run(out)  # 只用东方财富（备用雅虎、新浪）的公开数据，跟天勤无关：天勤那边出错也照样取
-        开盘复盘.run(out)  # 只读「数据/」里的文件，出错只打印
+        after_ticks("外盘涨跌", out)  # 只用东方财富（备用雅虎、新浪）的公开数据，跟天勤无关：天勤那边出错也照样取
+        after_ticks("开盘复盘", out)  # 只读「数据/」里的文件，出错只打印（11-10 起它 import 失败也不连累取 tick）
         print(f"===== {datetime.now():%H:%M:%S} 结束 =====")
 
 

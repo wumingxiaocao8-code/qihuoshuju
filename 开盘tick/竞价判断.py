@@ -7,7 +7,7 @@
   ✅ 大概率整根开到针附近（真：首笔离针 1 档以内，或比针走得还远）
   ▲ 大概率开不到整根、但离昨收有段距离（半真：首笔偏出门槛、比针小，照样能开到）
   ❌ 大概率假（首笔在门槛以内，几乎没动）
-  ○ 没针（针本身没偏出门槛）  ？ 不判断（有一腿竞价没成交、没收到快照，或还没定门槛的跨品种组合）
+  ○ 没针（针本身没偏出门槛）  ？ 不判断（有一腿竞价没成交、没收到快照，或还没定门槛的跨品种组合；11-10 起有腿进了交割月的也是，见 DELIVERY_SKIP）
 两步：
   1. 先挑 ❌：竞价量分 + 盘口分，合计 ≤ −1 就是 ❌（盘口缺一边时不判 ❌：多半是涨跌停锁住，sc 两年里两腿都锁住的 3 根针都整根开到；
      立刻能成交那边偏出门槛 2 倍以上时也不判 ❌：sc、nr、lu 两年里这样被判 ❌ 的 5 根全开到了门槛外，见 HEAVY）。
@@ -106,8 +106,7 @@ RET_DEFAULT = (0.17, 1.31)  # 2026-10-23 从 4 次开盘 30 根针算的八成�
 MIX = {p: 0.9 for p in rv.NEEDLE_GATE}  # 第 2 步改成猜首笔 = 昨收价差 + 0.9 ×（立刻能成交那边 − 昨收价差）；sc 0.7–0.95 成绩差不多
 # 混合版猜的首笔差门槛几档以内也算 ▲、不判 ❌（他定的：真针判成 ❌ 最怕，假针判成 ▲ 无所谓）：sc 5 档，别的品种按门槛的三分之一
 SLACK = {p: round(g / 3) for p, g in rv.NEEDLE_GATE.items()}
-NEAR = 0.2  # 浮层「近」= 昨收价差 + NEAR ×（猜首笔 − 昨收价差）（11-05 晚他定的：浮层只写「近」「远」，远 = 首笔半，原来的远档不上浮层；两年回放 18 个品种「重」的针挂 0.2 成都不比首笔半差，见 测试/2026-11-05_挂几成重跑/小结.md）
-NO_NEAR = ("ru", "br")  # 11-06 他定的（br 11-07 加：br 专项挂远 −0.2 档、挂近 −0.9 档）：这些品种浮层只写「远」（首笔半）、不写「近」（ru 专项：正滑一半口径挂近每次约 +0.2 档、挂远 +0.6–1.0 档，见 测试/2026-11-06_ru专项/小结.md）；csv 的「近」照算
+NEAR = 0.2  # csv 和网页的「近」= 昨收价差 + NEAR ×（猜首笔 − 昨收价差），只作对照（11-05 晚到 11-09 浮层上也写「近」；11-09 他定的：浮层只留「首笔估」= 首笔半）
 HALF = 0.5  # 标签上的「首笔半」= 昨收价差 + HALF ×（猜首笔 − 昨收价差）
 HALF_BY = {"ag": 1 / 3, "sn": 1 / 3, "ni": 1 / 3}  # 按品种另设（10-31 他定的）：ag、sn、ni 挂三分之一，两年回放比挂一半多赚 4–12%（腿2 晚半秒），判断不变
 # 远档（11-02 夜他定的，全部 18 个品种）：每组挂两张单，首笔半 n1 手 + 远档 n2 手；远档 = 昨收价差 + 系数 ×（猜首笔 − 昨收价差）。
@@ -126,7 +125,7 @@ HEAVY = 2.0  # 立刻能成交那边偏出门槛 2 倍以上 = 大机会：不�
 HEAVY_SHOW = ("sc", "nr", "fu", "bu", "ag", "cu", "al", "zn", "pb", "sn", "ni", "ao", "br", "sp", "rb", "hc", "ru", "ss", "nr-ru")  # 浮层只在这几个品种的格子上贴重仓标记（验过的：sc、nr 10-24，fu、bu 10-27，有色和 ao br sp rb hc ru ss 10-31 上期所两年回放，nr-ru 11-05 两年 L2：门槛 8 时重 22 次、每次约是不重的两倍），别的品种只记进 csv 和网页
 FEE_SKIP = ("cu",)  # 手续费贵、不重的扣完费几乎白干的品种：判 ✅▲ 但不重时浮层贴灰框「不重」（10-31，cu 一组开平约 3.3 档）
 RELAX = ("ag", "al", "zn", "pb", "br", "rb", "hc", "ao")  # 第 1 步只有「竞价量分 −1、盘口分 0」时不判 ❌，交给第 2 步（10-31 有色和 br rb hc ao 两年回放；cu、sp、ss、ru 不放，见文件开头）
-TAG_STYLE = {"腿2秒进": "快", "量少": "少", "不重": "灰", "小针": "针", "换月": "换"}  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框、不重 灰框、小针 青框、换月 红框（跟腿2秒进一样）
+TAG_STYLE = {"腿2秒进": "快", "量少": "少", "不重": "灰", "小针": "针", "换月": "换", "交割月": "灰"}  # 交割月（11-10）：灰框，贴在 ？ 后面  # 浮层按样式上色：「重…」紫底、快 红框、少 黄框、不重 灰框、小针 青框、换月 红框（跟腿2秒进一样）
 # 换月（11-07 他定的，测试/2026-11-06_br专项/小结.md）：腿1 开盘前持仓 ÷ 腿2（主力）开盘前持仓 ≥ 这个数 = 持仓已经搬到后月、按成交量算的主力还没换过来，
 # 判 ✅▲ 的针贴红框「换月」、色块关。br 近两年判 ✅▲ 正滑一半：持仓比 < 1 +0.1 / +2.7 档，≥ 1 −1.3 / −1.8 档（2026 前 / 后），21 个换月周期 15 个亏，重 ≥ 3 倍也亏
 ROLL_OFF = {"br": 1.0}
@@ -145,6 +144,12 @@ LEG2_ALWAYS = True  # 11-06 他定的：「腿2秒进」不管针真假、重不
 # 腿2秒进！（11-07 他定的，测试/2026-11-07_腿2秒进档位/小结.md）：腿2秒进且主力（腿2）竞价自己跳了 ≥ 这么多倍门槛 → 浮层写「腿2秒进！」（短名「腿2！」）。
 # 只改字，色块、手数照旧。两年回放这类针腿2 晚半秒平均少 8.2 档，别的腿2秒进只少 0.6 档；None = 不分
 LEG2_STRONG = 2.0
+# 交割月不判断（11-10 他定的）：有一条腿已进交割月的格子（如 11 月的 cu2611-cu2612）一律不判断：档 = 不判断、符号 ？，
+# 不出猜首笔、首笔半、首笔区间和任何标记 / 色块（竞价手数小框照旧），浮层在 ？ 后面贴灰框「交割月」，csv 的「交割月」列记是哪条腿。
+# 两年回放定规则时去掉了交割月腿，规则从没在这类格子上验过；实盘 11-09 早、11-10 早 cu2611-2612 都判 ▲ 贴「打」，模拟 −27、−42 档。
+# 交割月按这次开盘所属交易日的月份算（trade_day：夜盘属于下一个交易日，11-30 周一 21:00 的夜盘属于 12-01，那时 cu2612 已进交割月）；
+# 开盘复盘.in_delivery 是按开盘那个月算的（只给记分卡另列用），月末那一晚夜盘两边会差一个月。False = 回到老样子
+DELIVERY_SKIP = True
 # ---- 薄大（2026-10-30，分析/2026-10-26/腿2控价/小结.md 第 12、14 节）----
 BOOK_SHOW = ("sc",)  # 只有 sc 判薄大（nr、fu、bu、lu 回放里薄大不亏）
 THIN_STEP = 5  # 要吃那边第二档离第一档 ≥ 5 档 = 控价大（他定的）
@@ -157,6 +162,7 @@ KINDS = tuple(SYMBOL)
 SHOW = 60  # 标签开盘后再留 60 秒
 EARLIEST, LATEST = timedelta(minutes=10), timedelta(seconds=90)  # 开盘前 10 分钟以内、HH:58:30 以前才跑
 AUCTION = timedelta(seconds=60)  # 竞价那张快照在开盘前一分钟里（20:59:00.5）
+SUBSCRIBE_STOP = timedelta(seconds=100)  # 离开盘 100 秒（HH:58:20）还没订阅上的合约不再逐个试，留时间重连、按时写结果（11-09）
 GIVE_UP = timedelta(seconds=20)  # HH:59:40 还没收到竞价快照，就当这次没开盘
 SETTLE = 3  # 第一张竞价快照到了以后，最多再等 3 秒等其余的
 CLOSE_BY = timedelta(seconds=20)  # 取 30 秒均价要的 tick 最晚等到竞价前 20 秒（HH:58:40），没到的合约昨收退回收盘快照（11-08 审查）
@@ -168,7 +174,7 @@ CSV_COLS = ["开盘", "组合", "腿1", "腿2", "品种", "档", "符号", "首�
             "立刻能卖", "立刻能买", "托住几成", "盘口分", "合计", "保留比例下", "保留比例上", "保留比例依据", "腿1盘口宽档",
             "腿1竞价手数", "腿1卖一量", "腿1买一量", "腿2竞价手数", "腿2卖一量", "腿2买一量", "一档", "文字", "快照时间", "算好时间", "来源",
             "v1档", "猜首笔", "区间依据", "立刻能成交几倍门槛", "腿1跳空档", "腿2跳空档", "主力动得少", "重仓标记", "近", "首笔半",
-            "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大", "不重", "远档", "两层手数", "小针", "持仓比", "量比", "换月条件", "换月", "换月缺数", "昨收来源"]
+            "腿2台阶2", "腿2要吃五档", "腿2五档均", "腿2平时", "腿2厚薄倍", "腿2平时依据", "薄大", "不重", "远档", "两层手数", "小针", "持仓比", "量比", "换月条件", "换月", "换月缺数", "昨收来源", "交割月"]
 
 
 # ---------- 判断（实盘、回放、开盘复盘共用） ----------
@@ -432,6 +438,25 @@ def fit_note(fit: dict) -> str:
             "（E = 立刻能成交那边偏几档，X = 针偏几档）")
 
 
+def trade_day(o: datetime):
+    """这次开盘属于哪个交易日（11-10 加，交割月用）：日盘 = 当天；夜盘（21:00）= 下一个工作日（周五夜盘 → 下周一）。
+    不查节假日：长假前一晚没有夜盘，碰不到。"""
+    d = o.date()
+    if o.hour >= 18:
+        d += timedelta(days=1)
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+    return d
+
+
+def delivery_legs(o: datetime, c1: str, c2: str) -> list[str]:
+    """已进交割月的腿：合约 YYMM ≤ 这次开盘所属交易日的 YYMM（cu2611 在 11 月的交易日就算）。DELIVERY_SKIP = False 时返回空。"""
+    if not DELIVERY_SKIP:
+        return []
+    ym = f"{trade_day(o):%y%m}"
+    return [c for c in (c1, c2) if c[-4:].isdigit() and c[-4:] <= ym]
+
+
 def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, past, source: str,
              missing: dict | None = None) -> list[dict]:
     """每组一行：判断 + 首笔区间 + 标签上的字。snaps = {合约: 快照}，closes = {合约: 昨收}，ticks = {合约: 最小变动价位}，
@@ -445,8 +470,13 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
         if p1 != p2:  # 跨品种：两腿一档不一样时，价差按小的那个算
             t = min(t, ticks.get(s2) or rv.TICK.get(p2) or t)
         bad = [f"{s.split('.')[-1]} {missing[s]}" for s in (s1, s2) if s in missing]
+        dlv = delivery_legs(o, c1, c2)  # 交割月不判断（11-10，DELIVERY_SKIP）
         if bad:
             j = {"档": "不判断", "理由": "、".join(bad)}
+        elif dlv:  # 不出猜首笔、区间、换月、薄大、重仓这些：bad 置成真，下面换月、薄大两段（not bad）就跳过；区间看 dlv
+            j = {"档": "不判断", "交割月": "、".join(dlv),
+                 "理由": f"{'、'.join(dlv)} 已进交割月，不判断：规则没在交割月腿上验过（两年回放定规则时去掉了交割月腿）"}
+            bad = True
         else:
             j = judge(snaps.get(s1), snaps.get(s2), closes.get(s1), closes.get(s2), t,
                       rv.NEEDLE_GATE.get(key), (c1, c2), MIX.get(key), SLACK.get(key, 0), key in RELAX, SMALL.get(key))
@@ -486,7 +516,7 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
                "品种": key, **j, "符号": SYMBOL[j["档"]], "一档": t, "来源": source}
         if rg:
             row["区间依据"] = fit_note(fit)
-        else:  # 老办法：盘口两头各 1 档 + 保留比例
+        elif not dlv:  # 老办法：盘口两头各 1 档 + 保留比例（交割月的格子不出区间）
             ret = retention(past, o, j["档"] if j["档"] in ("真", "半真", "假") else None, key)
             rg = first_range(j, t, ret)
             row |= {"保留比例下": round(ret[0], 2), "保留比例上": round(ret[1], 2), "保留比例依据": ret[2],
@@ -502,11 +532,11 @@ def evaluate(o: datetime, pairs: list, snaps: dict, closes: dict, ticks: dict, p
             if far:  # 远档（11-02 夜加）：首笔半 n1 手 + 远档 n2 手
                 row["远档"] = round(j["昨收价差"] + (j["猜首笔"] - j["昨收价差"]) * far[0], decimals(t) + 1)
                 row["两层手数"] = f"首笔半 {far[1]} 手 + 远档 {far[2]} 手"
-        nd = decimals(t) + 1  # 11-05 晚起文字写「近 … 远 …」：近 = NEAR 成，远 = 首笔半（csv 的「远档」列照算、不进文字）
-        near = "" if key in NO_NEAR or "近" not in row else f"  近 {row['近']:.{nd}f}"
-        row["文字"] = (f"{name}  首笔 {guess}{near}  远 {row['首笔半']:.{nd}f}\n"  # 两行：浮层把第二行写在下面
+        nd = decimals(t) + 1  # 11-09 起文字只写「首笔估」= 首笔半（csv 的「近」「远档」列照算、不进文字）
+        row["文字"] = (f"{name}  首笔 {guess}  首笔估 {row['首笔半']:.{nd}f}\n"  # 两行：浮层把第二行写在下面
                       f"首笔区间 ({price(rg[0], t)} ~ {price(rg[1], t)})" if rg and guess else
-                      f"{name}  首笔 {price(rg[0], t)} ~ {price(rg[1], t)}" if rg else f"{name}  {j['理由']}")
+                      f"{name}  首笔 {price(rg[0], t)} ~ {price(rg[1], t)}" if rg else
+                      f"{name}  " if dlv else f"{name}  {j['理由']}")  # 交割月：浮层去掉组合名后只剩「？」+ 灰框「交割月」（标记见 tags_of）
         for n, s in (("腿1", s1), ("腿2", s2)):  # 竞价成交手数（浮层上标签左边的小框）和竞价后的盘口挂单手数（只记进 csv）
             x = snaps.get(s) or {}
             row[f"{n}竞价手数"], row[f"{n}卖一量"], row[f"{n}买一量"] = x.get("竞价手数"), x.get("卖一量"), x.get("买一量")
@@ -785,7 +815,10 @@ def grouped(d: dict) -> dict:
 
 def tags_of(r: dict) -> list:
     """浮层上的重仓标记 [[字, 样式], …]，贴在符号后面；只有 HEAVY_SHOW 的品种（同品种跨月）贴「重…」那一串。
-    「腿2秒进」11-06 他定的：只要主力动得少，不管针判真假、重不重、哪个品种都贴（LEG2_ALWAYS）。"""
+    「腿2秒进」11-06 他定的：只要主力动得少，不管针判真假、重不重、哪个品种都贴（LEG2_ALWAYS）。
+    交割月不判断的格子（11-10，DELIVERY_SKIP）只贴一个灰框「交割月」（csv 读回来空格是 NaN，所以要看是不是字）。"""
+    if r.get("档") == "不判断" and isinstance(r.get("交割月"), str) and r.get("交割月"):
+        return [["交割月", TAG_STYLE["交割月"]]]
     t = r.get("重仓标记")
     if r.get("品种") in BOOK_SHOW and r.get("薄大") == "薄大":  # 薄大顶替重仓那一串（sc 两年回放：重 + 薄大 也是亏的）
         out = [["薄大", "薄"]]
@@ -933,6 +966,8 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
     body = [f"<style>{css}</style><h1>竞价判断 {o:%Y-%m-%d %H:%M}（{rv.session_of(o)}{'，回放' if info['回放'] else ''}）</h1>",
             f"<p class='meta'>{rv.esc(info['说明'])}。{counts(rows)}</p>",
             "<p class='note'>✅ 大概率整根开到针附近（真）；▲ 大概率开不到整根、但离昨收有段距离（半真）；❌ 大概率假；○ 没针；？ 不判断。"
+            + ("有一条腿已进交割月（按这次开盘所属交易日的月份，夜盘算下一个交易日）的格子一律 ？ 不判断、浮层贴灰框「交割月」（11-10 起：规则没在交割月腿上验过）。"
+               if DELIVERY_SKIP else "") +
             "定了门槛的品种都用混合版（2026-10-24 从 sc 两年回放定的，同一晚推到所有品种；只有 sc、nr、lu 用两年回放验过）；"
             "都只是线索，每次开盘后在开盘复盘的规则五里对答案。</p>"]
     order = {k: i for i, k in enumerate(("真", "半真", "假", "不判断", "没针"))}
@@ -951,6 +986,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                     f"{r['托住几成'] * 100:.0f}%" if r.get("托住几成") is not None else "",
                     rv.fmt(r.get("立刻能成交几倍门槛"), 1), rv.fmt(r.get("合计"), 0, plus=True),
                     f"{rv.fmt(r['腿1跳空档'], 1, plus=True)} / {rv.fmt(r['腿2跳空档'], 1, plus=True)}" if r.get("腿1跳空档") is not None else "",
+                    f"交割月（{r['交割月']}，不判断，浮层贴灰框）" if tags_of(r) == [["交割月", TAG_STYLE["交割月"]]] else
                     ("薄大" + (f"（顶替 {r['重仓标记']}）" if r.get("重仓标记") else "")) if r.get("薄大") == "薄大" else
                     (r["重仓标记"] + ("" if r.get("品种") in HEAVY_SHOW else "（浮层不贴，只记录）")) if r.get("重仓标记") else
                     "不重（手续费贵，浮层贴灰框）" + ("、腿2秒进" if LEG2_ALWAYS and leg2_slow(r) else "") if r.get("不重") == "不重" else
@@ -975,8 +1011,7 @@ def build_page(rows: list, o: datetime, info: dict) -> str:
                 f"差门槛（{'，'.join(f'{chr(12289).join(ps)} {k} 档' for k, ps in grouped(SLACK).items())}）以内的也算 ▲，不判 ❌（真针判成 ❌ 最怕）。"
                 "盘口缺一边时按 v1：针不到门槛的 "
                 f"{BIG} 倍 → ✅，否则 ▲。混合版的格子上，v1 判得不一样时符号下面小字写着 v1 的。"
-                f"浮层写「近」「远」（11-05 晚起）：近 = 昨收价差 + {NEAR:g} ×（猜首笔 − 昨收价差），远 = 首笔半；"
-                f"两年回放 18 个品种「重」的针挂 {NEAR:g} 成都不比首笔半差（测试/2026-11-05_挂几成重跑/小结.md）。"
+                f"浮层只写「首笔估」（11-09 起）= 首笔半；表里的「近」= 昨收价差 + {NEAR:g} ×（猜首笔 − 昨收价差），只作对照。"
                 f"首笔半 = 昨收价差 + {HALF:g} ×（猜首笔 − 昨收价差），{'、'.join(HALF_BY)} 是 1/3（10-31 有色两年回放：挂近一点成交多、更赚）。"
                 "远档 = 昨收价差 + 远档系数 ×（猜首笔 − 昨收价差），每组挂两张单（首笔半 + 远档，手数见「两层手数」）："
                 + "，".join(f"{p} {k:g}（{a}+{b}）" for p, (k, a, b) in FAR.items())
@@ -1144,13 +1179,40 @@ def connect_until(o: datetime, jf: Path, state: dict, clock):
     while True:
         n += 1
         try:
-            return tick.TqApi(auth=tick.load_auth(), disable_print=True)
+            return tick.TqApi(auth=tick.load_auth(), disable_print=False)  # 11-09：天勤自己的通知（连接建立 / 断开等）写进运行日志，出事有线索
         except Exception as e:
             print(f"第 {n} 次连天勤失败：{type(e).__name__} {e}")
             put(jf, state | {"状态": "等待", "红": True, "提示": f"竞价判断：连不上天勤，重试中（{clock():%H:%M:%S}）"})
             if clock() + timedelta(seconds=5) >= stop:
                 raise
             time.sleep(5)
+
+
+class NoQuotes(RuntimeError):
+    """连上了天勤，但重连一次后还是一个合约的行情都没来。"""
+
+
+def subscribe(api, symbols: list, stop: datetime, clock) -> tuple[dict, dict]:
+    """订阅行情，返回 (quotes, missing)：先一次全订；不行再逐个试（一个合约有毛病不拖累别的）。
+    11-09：逐个试原来没有总时限，天勤不回话时每个合约等 30 秒，几十个合约能卡过开盘、把任务计划占住，下一场被跳过。
+    现在过了 stop 就不试了；第一个就超时、一个都没成，说明是天勤没回话，再试别的也一样，直接回去让上面重连。"""
+    try:
+        return dict(zip(symbols, api.get_quote_list(symbols))), {}
+    except Exception as e:
+        print(f"一次订阅 {len(symbols)} 个合约没成：{type(e).__name__} {e}")
+    quotes, missing = {}, {}
+    for s in symbols:
+        if clock() >= stop:
+            missing[s] = "来不及订阅"
+            continue
+        try:
+            quotes[s] = api.get_quote(s)
+        except Exception as e:
+            missing[s] = "订阅不了"
+            print(f"{s} 订阅不了：{type(e).__name__} {e}")
+            if type(e).__name__ == "TqTimeoutError" and not quotes:
+                return quotes, missing | {x: "天勤没回话，没试" for x in symbols if x not in missing}
+    return quotes, missing
 
 
 def live(o: datetime, pairs: list, jf: Path, state: dict, page: Path, skew: float = 0.0) -> tuple[list, dict] | None:
@@ -1172,22 +1234,23 @@ def live(o: datetime, pairs: list, jf: Path, state: dict, page: Path, skew: floa
         prev = max((d for d in days if d < o.date()), default=None)
         carry = o.hour < 12 and prev is not None and pre.has_opening(datetime.combine(prev, datetime.min.time()).replace(hour=21), days)
         symbols = list(dict.fromkeys(s for pr in pairs for s in pr))
-        quotes, missing = {}, {}
-        try:
-            quotes = dict(zip(symbols, api.get_quote_list(symbols)))
-        except Exception:
-            for s in symbols:
-                try:
-                    quotes[s] = api.get_quote(s)
-                except Exception as e:
-                    missing[s] = "订阅不了"
-                    print(f"{s} 订阅不了：{type(e).__name__} {e}")
+        stop = o - SUBSCRIBE_STOP
+        quotes, missing = subscribe(api, symbols, stop, clock)
+        if not quotes:  # 连上了但行情不来（有同事的电脑 11-03、11-09 各出过一次）：断开重连一次，多半能救回来
+            print(f"{clock():%H:%M:%S} 一个合约都没订阅上，断开重连一次")
+            put(jf, state | {"状态": "等待", "红": True, "提示": f"竞价判断：天勤没行情，重连一次（{clock():%H:%M:%S}）"})
+            try:
+                api.close()
+            except Exception as e:
+                print(f"断开出错（接着重连）：{type(e).__name__} {e}")
+            api = connect_until(o, jf, state, clock)
+            quotes, missing = subscribe(api, symbols, stop, clock)
         for s, q in list(quotes.items()):
             if q.expired:
                 missing[s] = "已到期"
                 del quotes[s]
         if not quotes:
-            raise RuntimeError("一个合约都没订阅上：" + "、".join(f"{s} {w}" for s, w in missing.items()))
+            raise NoQuotes("天勤没行情（重连后还是一个合约都没订阅上）：" + "、".join(f"{s} {w}" for s, w in missing.items()))
         before, late = {}, []
         for s, q in quotes.items():
             t = when(q.datetime)
@@ -1331,7 +1394,8 @@ def run_live(force: bool, overlay: bool) -> None:
     except Exception as e:
         import traceback
         print(f"竞价判断出错：{type(e).__name__} {e}\n{traceback.format_exc()}")
-        put(jf, state | {"状态": "出错", "红": True, "提示": f"竞价判断出错（{type(e).__name__}），这次没有判断，看运行日志"})
+        why = "天勤没行情（重连也没用）" if isinstance(e, NoQuotes) else f"竞价判断出错（{type(e).__name__}）"
+        put(jf, state | {"状态": "出错", "红": True, "提示": f"{why}，这次没有判断，看运行日志"})
     wait_overlay(proc)
     print(f"===== {datetime.now() + timedelta(seconds=skew):%H:%M:%S} 竞价判断结束 =====")
 

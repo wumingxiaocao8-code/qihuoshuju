@@ -18,6 +18,11 @@
     正滑 w =（开盘那一秒成交均价 − 报单价）÷（腿1 第一个半秒成交均价 − 报单价），只在那半秒均价比报单价好时算（逐单复现的定义）；
     近 / 远够得着：用这张单开盘那一秒的成交均价当「到达时的市场价」，反推浮层「近」「远」换成腿1 限价那一刻够不够得着（只算 1 手，不算抢量）。
   一组一行（开盘组合.csv）：开盘 5 秒内腿1、腿2 的开仓成交合起来的开仓价差，比挂价差好几档（正滑档）。同事那份成交记录没有报单编号，只能按组合合起来算。
+  反着挂（11-09）：看板上的腿2 反而先挂、腿1 后追（主力换了、看板还没换，如 11-06 夜 ag2702 已是主力，老陆先买 ag2612 再追卖 ag2702）。
+    按报单编号认：腿2 那边最早的单比腿1 所有单都早，前面又没有能配它的反方向开仓单。这时一单一行记真正先挂的那条腿（「挂法」写「腿2先挂」），后追的单不算开盘单；
+    挂价差仍按看板方向（腿1 − 腿2）= 腿1 对手价 − 报单价。
+  腿2 共用（11-09）：一条腿2 同时配几组（含看板外的，如 rb2701 同时配 rb2705、rb2703、hc2701）时，先按报单找手数正好对得上这组的那几张腿2 单；
+    只有一种凑法才算数。凑不出：几组都在看板上就按腿1 手数分（均价近似），有看板外的就写「配不清」、开仓价差留空。
 """
 import argparse
 import csv
@@ -142,6 +147,33 @@ def vwap(fs: list[dict]):
     return (sum(f["价"] * f["手"] for f in fs) / q, q) if q else (None, 0)
 
 
+def oid(o: dict) -> int:
+    return int(re.sub(r"\D", "", o.get("报单编号", "") or "") or 0)
+
+
+def unique_orders(fs: list[dict], q: float, limit: int = 18) -> list[dict] | None:
+    """成交按报单编号分堆，找手数加起来正好 = q 的那几张单；只有一种凑法才算数（多种凑法、单太多、没报单编号 → None，分不清不硬配）。"""
+    by = {}
+    for f in fs:
+        by.setdefault(f["报单编号"], []).append(f)
+    if "" in by or not q or len(by) > limit:
+        return None
+    items = [(k, sum(f["手"] for f in v)) for k, v in by.items()]
+    hits = []
+
+    def walk(i, left, cur):
+        if len(hits) > 1:
+            return
+        if abs(left) < 1e-9:
+            hits.append(cur)
+        elif i < len(items) and left > 0:
+            walk(i + 1, left - items[i][1], cur + [items[i][0]])
+            walk(i + 1, left, cur)
+
+    walk(0, q, [])
+    return [f for k in hits[0] for f in by[k]] if len(hits) == 1 else None
+
+
 def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict], fills: list[dict] | None,
                 notes: list | None = None) -> tuple[list, list]:
     """fills = None：这人没有成交记录（成交只能看委托单上的成交手数、均价）。notes：对不上组合的提醒写进这里。"""
@@ -159,6 +191,37 @@ def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict],
     o_ts = datetime.strptime(folder.name, "%Y-%m-%d_%H%M")
     in_win = lambda s, n: s is not None and t0 <= s <= t0 + n
     tk = {}
+    # 反着挂：见文件开头。rev = 真正先挂的单 → 组合，chased = 后追的单（不算开盘单）
+    opens = [o for o in orders if o.get("开平") == "开仓" and in_win(secs(o.get("报单时间", "")), OPEN_SECS) and oid(o)]
+    is_sell = lambda o: "卖" in o.get("买卖", "")
+    product = lambda c: re.match(r"[A-Za-z]*", c)[0].lower()
+    mates = {}
+    for v in b.values():
+        mates.setdefault(v["腿1"], set()).add(v["腿2"])
+        mates.setdefault(v["腿2"], set()).add(v["腿1"])
+    cand = {}
+    for k, j in b.items():
+        c1, c2 = j["腿1"], j["腿2"]
+        if c1 in two:
+            continue
+        for sell in (True, False):
+            chase = [o for o in opens if o["合约"] == c1 and is_sell(o) == sell]
+            lead = [o for o in opens if o["合约"] == c2 and is_sell(o) != sell]
+            if not chase or not lead or min(map(oid, lead)) > min(map(oid, chase)):
+                continue
+            first = min(map(oid, lead))
+            if any(oid(o) < first and is_sell(o) == sell and (product(o["合约"]) == product(c2) or o["合约"] in mates[c2]) for o in opens):
+                continue  # 它前面有能配的反方向开仓单：它是别的组的腿2，不是反着挂
+            cand.setdefault((c2, sell), []).append((k, chase, [o for o in lead if oid(o) < min(map(oid, chase))]))
+    rev, chased = {}, set()
+    for (c2, _), got in cand.items():
+        if len(got) > 1:
+            if notes is not None:
+                notes.append(f"{who} {folder.name}：{c2} 先挂，但 {'、'.join(g[0] for g in got)} 都有后追的单，对不上是哪一组，这几组仍按看板方向算")
+            continue
+        k, chase, lead = got[0]
+        rev.update({o["报单编号"]: k for o in lead})
+        chased.update(o["报单编号"] for o in chase)
 
     def tick_of(c):
         if c not in tk:
@@ -180,23 +243,28 @@ def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict],
     rows = []
     for o in orders:
         c = o.get("合约", "")
-        if len(by_leg1.get(c, ())) != 1 or o.get("开平") != "开仓" or not in_win(secs(o.get("报单时间", "")), OPEN_SECS):
+        k_rev = rev.get(o.get("报单编号", ""))
+        if o.get("报单编号", "") in chased:
             continue
-        j = b[by_leg1[c][0]]
-        s = 1 if "卖" in o.get("买卖", "") else -1  # 卖腿1 = 卖价差（空开），价越高越好
+        if k_rev is None and (len(by_leg1.get(c, ())) != 1 or o.get("开平") != "开仓" or not in_win(secs(o.get("报单时间", "")), OPEN_SECS)):
+            continue
+        j = b[k_rev or by_leg1[c][0]]
+        mate = j["腿1"] if k_rev else j["腿2"]  # 另一条腿
+        so = 1 if "卖" in o.get("买卖", "") else -1  # 这张单：卖 = 价越高越好
+        s = -so if k_rev else so  # 价差方向（看板的 腿1 − 腿2）：卖腿1 = 卖价差（空开）
         t = num(j.get("一档")) or 1
         base, needle = num(j.get("昨收价差")), num(j.get("针"))
         p = num(o.get("报单价格"))
         sec = secs(o.get("报单时间", ""))
         first_one = sec == t0  # 开盘那一秒的首单：按竞价后那张定价；之后的重挂按那一秒 .5 那张（没有就往前找最近一张）
         if first_one:
-            a2 = at(j["腿2"], auc_ts)
+            a2 = at(mate, auc_ts)
         else:
-            d2 = tick_of(j["腿2"])
+            d2 = tick_of(mate)
             k = None if d2 is None else d2[d2.index <= o_ts + timedelta(seconds=sec - t0 + 0.5)]
             a2 = None if k is None or not len(k) else k.iloc[-1]
-        opp2 = None if a2 is None else num(a2["卖一价"] if s > 0 else a2["买一价"])
-        sp = None if p is None or opp2 is None else p - opp2
+        opp2 = None if a2 is None else num(a2["卖一价"] if so > 0 else a2["买一价"])  # 另一条腿的对手价
+        sp = None if p is None or opp2 is None else (opp2 - p if k_rev else p - opp2)
         g = guess_of(j, s)
         frac = None
         if sp is not None and base is not None and g is not None and abs(g - base) >= t - 1e-9:
@@ -210,7 +278,7 @@ def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict],
         else:  # 同事那种：委托单没手数、成交记录没报单编号，不知道
             x, q1 = None, None
         leg1 = at(c, half_ts)
-        start = num(j.get("腿1竞价"))
+        start = num(j.get("腿2竞价" if k_rev else "腿1竞价"))
         if start is None:
             a1 = at(c, auc_ts)
             start = None if a1 is None else (num(a1["买一价"]) + num(a1["卖一价"])) / 2 if num(a1["买一价"]) and num(a1["卖一价"]) else None
@@ -218,18 +286,19 @@ def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict],
         tick1 = t  # 腿1 一档：同品种跨月价差的一档就是腿1 的一档
         a = (x - start) / (end - start) if None not in (x, start, end) and abs(end - start) >= 2 * tick1 - 1e-9 else None
         avg1 = None if leg1 is None else num(leg1.get("均价"))
-        w = (x - p) / (avg1 - p) if None not in (x, p, avg1) and s * (avg1 - p) > 1e-9 else None
+        w = (x - p) / (avg1 - p) if None not in (x, p, avg1) and so * (avg1 - p) > 1e-9 else None
         half = HALF_BY.get(j.get("品种"), HALF)
         reach = {}
         for lab, k in (("近", NEAR), ("远", half)):
             if None in (x, opp2, base, g):
                 reach[lab] = ""
                 continue
-            lim = round((base + k * (g - base)) / t) * t + opp2
-            reach[lab] = "是" if s * (x - lim) >= -1e-9 else "否"
+            level = round((base + k * (g - base)) / t) * t
+            lim = opp2 - level if k_rev else level + opp2
+            reach[lab] = "是" if so * (x - lim) >= -1e-9 else "否"
         rows.append({
             "日期": day, "开盘": f"{o_ts:%Y-%m-%d %H:%M}", "谁": who, "报单编号": o.get("报单编号", ""), "报单时间": o.get("报单时间", ""),
-            "组合": j.get("组合"), "品种": j.get("品种"), "腿1": c, "买卖": "卖" if s > 0 else "买",
+            "组合": j.get("组合"), "品种": j.get("品种"), "腿1": c, "挂法": "腿2先挂" if k_rev else "", "买卖": "卖" if so > 0 else "买", "价差方向": "卖" if s > 0 else "买",
             "顺针": "" if needle is None or base is None or needle == base else ("是" if (needle > base) == (s > 0) else "否"),
             "判": SYMBOL.get(j.get("档"), j.get("档")), "重仓标记": j.get("重仓标记", ""), "针偏几档": num(j.get("针偏几档")),
             "一档": t, "昨收价差": base, "猜首笔": g, "腿2对手价": opp2, "报单价": p, "挂价差": sp,
@@ -238,10 +307,9 @@ def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict],
             "开盘秒成交手数": q1, "开盘秒均价": x,
             "挂单状态": o.get("挂单状态", ""), "腿1竞价": start, "腿1半秒末中间价": end, "腿1半秒均价": avg1,
             "到达点a": None if a is None else round(a, 2), "正滑w": None if w is None else round(w, 2),
-            "正滑档(腿1)": None if None in (x, p) else round(s * (x - p) / tick1, 1),
+            "正滑档(腿1)": None if None in (x, p) else round(so * (x - p) / tick1, 1),
             "近够得着": reach["近"], "远够得着": reach["远"]})
-    # 一组一行：开盘 5 秒内腿1、腿2 开仓成交合起来。几组共用同一个腿2、方向也一样（bu2612、bu2702 都买 bu2701）时，
-    # 腿2 的成交对不上是哪一组的，按各组腿1 成交手数分，均价大家一样（近似）。
+    # 一组一行：开盘 5 秒内腿1、腿2 开仓成交合起来。几组共用同一个腿2、方向也一样（bu2612、bu2702 都买 bu2701）时见文件开头「腿2 共用」。
     if fills is None:  # 没有成交记录，算不了开仓价差
         return rows, []
     tmp = []
@@ -249,9 +317,9 @@ def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict],
         c = j["腿1"]
         if c in two:
             continue
-        mine = sorted((r for r in rows if r["腿1"] == c), key=lambda r: (r["报单时间"], int(re.sub(r"\D", "", r["报单编号"]) or 0)))
+        mine = sorted((r for r in rows if r["组合"] == j.get("组合")), key=lambda r: (r["报单时间"], int(re.sub(r"\D", "", r["报单编号"]) or 0)))
         if mine:  # 按报单时间、报单编号排，mine[0] 是开盘首单
-            s = 1 if mine[0]["买卖"] == "卖" else -1
+            s = 1 if mine[0]["价差方向"] == "卖" else -1
         elif not orders:  # 没有委托单（11-05 审查前这种全跳过）：方向看腿1 开盘 5 秒内的开仓成交，买卖都有就不算
             sides = {"卖" in f["买卖"] for f in fills if f["合约"] == c and f["开平"] == "开仓" and in_win(f["秒"], PAIR_SECS)}
             if len(sides) != 1:
@@ -266,23 +334,31 @@ def one_opening(day: str, sess: str, folder: Path, who: str, orders: list[dict],
         share = [x for x in tmp if leg2_of[x[0]] == leg2_of[k] and x[3] == s]
         f2 = [f for f in fills if f["合约"] == leg2_of[k] and f["开平"] == "开仓" and in_win(f["秒"], PAIR_SECS) and ("买" in f["买卖"]) == (s > 0)]
         p2, q2 = vwap(f2)
-        if len(share) > 1:
+        shared = "是" if len(share) > 1 else ""
+        if q1 and (len(share) > 1 or q2 > q1 + 1e-9):  # 腿2 成交比这组多：别的组（可能在看板外）也用这条腿
+            exact = unique_orders(f2, q1)
             tot = sum(x[5] for x in share)
-            q2 = min(q1, q2 * q1 / tot) if tot else 0
-            if not q2:
-                p2 = None
+            if exact:
+                p2, q2 = vwap(exact)
+                shared = "是"
+            elif len(share) > 1 and q2 <= tot + 1e-9:
+                q2 = min(q1, q2 * q1 / tot)
+            else:
+                p2, q2, shared = None, None, "配不清"
+        elif len(share) > 1:  # 这组腿1 没成交
+            p2, q2 = None, 0
         m0 = mine[0] if mine else {}
         sp, t = m0.get("挂价差"), m0.get("一档") or num(j.get("一档")) or 1
         opened = None if p1 is None or p2 is None else p1 - p2
         if not mine and not q1:
             continue
-        pairs.append({"日期": day, "开盘": f"{o_ts:%Y-%m-%d %H:%M}", "谁": who, "组合": j.get("组合"), "品种": j.get("品种"), "买卖价差": "卖" if s > 0 else "买",
+        pairs.append({"日期": day, "开盘": f"{o_ts:%Y-%m-%d %H:%M}", "谁": who, "组合": j.get("组合"), "品种": j.get("品种"), "挂法": m0.get("挂法", ""), "买卖价差": "卖" if s > 0 else "买",
                       "判": SYMBOL.get(j.get("档"), j.get("档")), "重仓标记": j.get("重仓标记", ""), "开盘单数": len(mine) if mine else None,
                       "报单手数": sum(r["报单手数"] or 0 for r in mine) or None,
-                      "挂价差(首单)": sp, "几成(首单)": m0.get("几成"), "腿1 5秒成交手数": q1, "腿1均价": p1, "腿2 5秒成交手数": round(q2, 1), "腿2均价": p2,
-                      "腿2共用": "是" if len(share) > 1 else "", "开仓价差": opened,
+                      "挂价差(首单)": sp, "几成(首单)": m0.get("几成"), "腿1 5秒成交手数": q1, "腿1均价": p1, "腿2 5秒成交手数": None if q2 is None else round(q2, 1), "腿2均价": p2,
+                      "腿2共用": shared, "开仓价差": opened,
                       "正滑档": None if opened is None or sp is None else round(s * (opened - sp) / t, 1),
-                      "腿2少成": None if not q1 else round(q1 - q2, 1)})
+                      "腿2少成": None if not q1 or q2 is None else round(q1 - q2, 1)})
     return rows, pairs
 
 
@@ -399,9 +475,9 @@ def summary(O: pd.DataFrame, P: pd.DataFrame) -> str:
     return "".join(out)
 
 
-DAY_COLS = ["开盘", "谁", "组合", "判", "重仓标记", "买卖", "顺针", "报单时间", "首单", "挂价差", "几成", "报单手数", "开盘秒成交手数", "开盘秒均价",
+DAY_COLS = ["开盘", "谁", "组合", "挂法", "判", "重仓标记", "买卖", "顺针", "报单时间", "首单", "挂价差", "几成", "报单手数", "开盘秒成交手数", "开盘秒均价",
             "到达点a", "正滑w", "正滑档(腿1)", "近够得着", "远够得着", "挂单状态"]
-PAIR_SHOW = ["开盘", "谁", "组合", "判", "买卖价差", "开盘单数", "挂价差(首单)", "几成(首单)", "腿1 5秒成交手数", "腿2 5秒成交手数", "腿2共用", "开仓价差", "正滑档", "腿2少成"]
+PAIR_SHOW = ["开盘", "谁", "组合", "挂法", "判", "买卖价差", "开盘单数", "挂价差(首单)", "几成(首单)", "腿1 5秒成交手数", "腿2 5秒成交手数", "腿2共用", "开仓价差", "正滑档", "腿2少成"]
 
 
 def report(day: str, rows: list, pairs: list, notes: list) -> Path:

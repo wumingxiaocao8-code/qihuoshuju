@@ -76,7 +76,8 @@ REC_COLS = ["开盘", "场次", "星期", "组合", "品种", "腿1", "腿2", "�
             "一下成交", "一下腿1价", "一下成交秒", "一下成交价差", "一下出场价差", "一下出场", "一下档数", "一下每手毛元", "一下每手净元",
             "排队成交", "排队腿1价", "排队成交秒", "排队成交价差", "排队出场价差", "排队出场", "排队档数", "排队每手毛元", "排队每手净元",
             "程序成交", "程序来源", "程序腿1价", "程序成交秒", "程序成交价差", "程序出场价差", "程序出场", "程序档数", "程序每手毛元", "程序每手净元",
-            "程序半成交", "程序半腿1价", "程序半成交秒", "程序半成交价差", "程序半出场价差", "程序半出场", "程序半档数", "程序半每手毛元", "程序半每手净元"]
+            "程序半成交", "程序半腿1价", "程序半成交秒", "程序半成交价差", "程序半出场价差", "程序半出场", "程序半档数", "程序半每手毛元", "程序半每手净元",
+            "浮层标记", "色块", "色块原因"]  # 11-10 加：照现在的规则这一格会贴什么（规则七用，见 signal_cols）
 PCT_COLS = ["主力跳空%", "腿1跳空%"]  # 只在程序里用（记分卡、涨跌幅统计），不写进表格
 HIDDEN_COLS = PCT_COLS + ["预估下沿", "预估上沿", "主力在范围内", "首笔下沿", "首笔上沿", "判断昨收价差"]  # 只在程序里用
 # 写进表格的列和顺序（小草定的）：针变化只在程序里用（针方向、记分卡），不写进表格
@@ -114,8 +115,16 @@ MULT = {"au": 1000, "ag": 15, "cu": 5, "bc": 5, "al": 5, "zn": 5, "pb": 5, "ni":
 # 每手每腿手续费（元）：开仓、平今。一组跨月开平 = 两腿 × (开 + 平今)。只填了从他成交记录算出来的；没填的品种只算毛的
 # cu：开 27、平今 54 元/手 → 一组 162 元 ≈ 3.2 档；ao br sp rb hc ru ss 10-31 从他 10-22~10-28 的成交记录算（每手中位，
 # 分析/2026-10-31/其余品种回放/脚本/分析.py 的 FEES；hc 按主力月，hc2703 那腿其实只要 0.66 元）
-FEE_OPEN = {"cu": 27, "ao": 5.14, "br": 1.63, "sp": 0.95, "rb": 3.06, "hc": 3.22, "ru": 3.03, "ss": 2.02}
-FEE_CLOSE = {"cu": 54, "ao": 5.14, "br": 1.63, "sp": 0.02, "rb": 3.06, "hc": 3.22, "ru": 0.03, "ss": 0.02}
+# 11-10 补 sc fu bu nr al nr-ru：同样口径（每笔 手续费 ÷ 手数 的中位，开仓、平今分开），用他 10-22 ~ 11-09 的全部成交记录，
+# 只看看板上的合约，两边都要 ≥ 20 笔才填（测试/2026-11-10_色块对账/手续费_定稿.py）。样本（开 / 平今 笔数）：
+# sc 128/128（sc2612、2701、2702 一样，固定 20 元 + 0.06）；fu 191/187，只用主力 fu2701（fu2702 费率低，开仓约 0.46 元，按主力算偏贵）；
+# bu 211/213（bu2612、2701、2702，按成交额收，2.23–2.68 元随价格变）；nr 30/77（按成交额收，3.12–3.42 元）；al 83/81（固定约 3.02 元）；
+# nr-ru 是跨品种，填两腿的平均（nr2612 开 3.34 / 平今 0.02、20/53 笔；ru2701 开 3.03 / 平今 0.03、67/79 笔），一组 = 两腿各开平一次，和公式对得上。
+# 还没填：ag（费率随月份差 5 倍：ag2612 约 9.8 元、ag2702 约 1.9 元，主力 ag2702 只有 2 笔）；zn pb sn ni 没有成交记录。
+FEE_OPEN = {"cu": 27, "ao": 5.14, "br": 1.63, "sp": 0.95, "rb": 3.06, "hc": 3.22, "ru": 3.03, "ss": 2.02,
+            "sc": 20.06, "fu": 2.31, "bu": 2.45, "nr": 3.23, "al": 3.02, "nr-ru": 3.19}
+FEE_CLOSE = {"cu": 54, "ao": 5.14, "br": 1.63, "sp": 0.02, "rb": 3.06, "hc": 3.22, "ru": 0.03, "ss": 0.02,
+             "sc": 0.06, "fu": 0.02, "bu": 0.02, "nr": 0.02, "al": 3.02, "nr-ru": 0.025}
 COEF_COLS = ["品种", "开盘时间", "场次", "主力", "昨收", "开盘价", "国内跳空%", "外盘涨跌%", "外盘时段", "来源"]
 
 
@@ -640,6 +649,35 @@ def sim_cols(folder: Path, open_ts, s1: str, s2: str, rec: dict, tick) -> dict:
     return out
 
 
+def signal_cols(j: dict, o: datetime) -> dict:
+    """11-10 加，规则七用：判了 ✅▲❌ 的格子，照**现在的规则**浮层会贴哪些标记（重几倍 / 腿2秒进 / 量少 / 换月 / 薄大 / 不重）、
+    什么色块（重 / 打 / 小 / 关）。直接调 竞价判断.tags_of 和 竞价浮层.verdict，规则改了这里跟着变。
+    老的实盘开盘当时还没有的标记：换月（11-07 才有）用那天的日行情补算（持仓比用日行情持仓，不是开盘前持仓）；
+    薄大（10-30）、主力动得少（10-24）当时没存就没有，不补。"""
+    import 竞价判断 as jd
+    kind = j.get("档")
+    if kind not in ("真", "半真", "假") or not isinstance(j.get("组合"), str):
+        return {}
+    j = dict(j)
+    c1, c2 = str(j.get("腿1", "")).split(".")[-1], str(j.get("腿2", "")).split(".")[-1]
+    try:
+        p1, p2 = product_of(c1), product_of(c2)
+    except AttributeError:
+        return {}
+    if (j.get("来源") == "实盘" and "换月条件" not in j and "持仓比" not in j and p1 == p2 and kind != "假"
+            and (jd.ROLL_ALL or p1 in jd.ROLL_OFF)):
+        try:
+            conds = jd.roll_conds(p1, c1, c2, o, None, None)["条件"]
+            label = jd.roll_label(conds) if (jd.ROLL_ALL or "A" in conds) else None
+            if label:
+                j["换月"] = label
+        except Exception:
+            pass  # 补不出来就当没有换月
+    tags = jd.tags_of(j)
+    v = jd.fl.verdict(j["组合"], kind, tags)
+    return {"浮层标记": " ".join(w for w, _ in tags), "色块": v[0] if v else "", "色块原因": v[1] if v else ""}
+
+
 def opened(rec: pd.DataFrame) -> pd.DataFrame:
     """真开过盘、有 tick 的行（去掉只有预估的）。"""
     return rec[rec["针"].notna() | rec["首笔价差"].notna()]
@@ -668,6 +706,7 @@ def build_records(out: Path = DATA) -> pd.DataFrame:
                     rec |= jd.review_cols(j, rec.get("首笔价差"), product_of(s1) if product_of(s1) == product_of(s2) else None)
                     if isinstance(j.get("重仓标记"), str) and j["重仓标记"]:
                         rec["重仓标记"] = j["重仓标记"]
+                    rec |= signal_cols(j, open_ts)
                 except Exception as e:
                     rec["备注"] = "；".join(x for x in (rec.get("备注"), f"59 分判断算错了：{type(e).__name__} {e}") if x)
                 try:
@@ -1015,6 +1054,105 @@ def miss_money(rec: pd.DataFrame) -> str:
             "（测试/2026-11-05_优化四项/小结.md 第二节）。每根明细在规则六「判 ❌ 的」那张表。</p>")
 
 
+SIG_MIN = 15  # 规则七：比的两边有一边不到 15 根，只写「样本少」
+# 两年回放里各色块、各信号的效果（门槛的几成，测试/2026-11-07_信号重要度/小结.md；那份没算的只写方向和出处）
+SIG_BLOCK_REF = {"重": "+0.42", "打": "+0.07", "小": "−0.10", "关": "−0.59"}
+
+
+def signal_frame(rec: pd.DataFrame) -> tuple:
+    """规则七的底表：判了 ✅▲❌、没有腿进交割月、程序版·正滑一半算得出来的针。
+    「几成」= 程序版·正滑一半的档数 ÷ 门槛（品种之间档数不能直接比，换成门槛的几成），没挂进算 0。返回（底表, 算不出来的根数）。"""
+    s = rec[rec["59分判断"].isin(["真", "半真", "假"])].copy()
+    if not len(s) or "程序半成交" not in s:
+        return s.iloc[0:0], 0
+    s = s[~s.apply(in_delivery, axis=1)]
+    gate = s["品种"].map(NEEDLE_GATE)
+    x = pd.to_numeric(s["程序半档数"], errors="coerce")
+    s["几成"] = (x / gate).where(s["程序半成交"] == "是").mask(s["程序半成交"] == "否", 0.0)
+    lost = int(s["几成"].isna().sum())
+    s = s[s["几成"].notna()].copy()
+    words = s["浮层标记"].map(lambda t: t.split() if isinstance(t, str) else [])
+    s["判✅▲"] = s["59分判断"] != "假"
+    s["重倍"] = words.map(lambda w: next((float(t[1:]) for t in w if re.fullmatch(r"重\d+(\.\d+)?", t)), np.nan))
+    s["腿2秒进"] = words.map(lambda w: any(t.rstrip("！") == "腿2秒进" for t in w))
+    s["腿2秒进！"] = words.map(lambda w: "腿2秒进！" in w)
+    s["换月"] = words.map(lambda w: any(t.startswith("换月") for t in w))
+    s["量少"] = words.map(lambda w: "量少" in w)
+    s["薄大"] = words.map(lambda w: "薄大" in w)
+    return s, lost
+
+
+def sig_num(v):
+    """门槛的几成，两位小数、带颜色；四舍五入后是 0 的写 0（不写 -0）。"""
+    v = round(float(v), 2)
+    return Raw("0") if v == 0 else colored(v, 2)
+
+
+def signal_cells(g: pd.DataFrame) -> list:
+    """一组针：根数、挂进几根、每次几成门槛、挂进的里面赚的占比。"""
+    took = g[g["程序半成交"] == "是"]
+    return [len(g), len(took), sig_num(g["几成"].mean()) if len(g) else "",
+            f"{(took['几成'] > 0).mean() * 100:.0f}%" if len(took) else ""]
+
+
+def rule_signals(rec: pd.DataFrame) -> str:
+    """规则七（11-10 他同意加）：浮层上每个色块、每条信号，在真实开盘里帮没帮上忙。
+    两年回放定的规则，这里拿规则没见过的开盘对答案；标记和色块按现在的规则重算（signal_cols）。"""
+    s, lost = signal_frame(rec)
+    if not len(s):
+        return "<p>还没有算得出来的针。</p>"
+    out = (f"<p class='note'>共 {len(s)} 根针、{s['开盘'].nunique()} 次开盘"
+           + (f"（另有 {lost} 根没有首笔半或收益算不出来，没算进去）" if lost else "") + "。</p>")
+    # 一、色块
+    rows, means = [], {}
+    for b in ("重", "打", "小", "关"):
+        g = s[s["色块"] == b]
+        if len(g) >= SIG_MIN:
+            means[b] = g["几成"].mean()
+        rows.append([b] + signal_cells(g) + [g["开盘"].nunique(), SIG_BLOCK_REF[b], "" if len(g) >= SIG_MIN else "样本少"])
+    seq = [b for b in ("重", "打", "小", "关") if b in means]
+    bad = [f"{a} 不如 {b}" for a, b in zip(seq, seq[1:]) if means[a] < means[b]]
+    say = ("够数的色块不到两个，顺序还看不出来。" if len(seq) < 2 else
+           f"够数的色块（{' > '.join(seq)}）顺序" + ("和回放一致。" if not bad else "和回放不一样：" + "、".join(bad) + "。"))
+    out += ("<h4>色块：重 / 打 / 小 / 关</h4>"
+            + table(["色块", "根数", "挂进", "每次（门槛几成）", "挂进的里面赚的", "涉及开盘", "两年回放每次", ""], rows)
+            + f"<p><b>{say}</b></p>")
+    # 二、单条信号：有 vs 没有
+    ok = s["判✅▲"]
+    heavy = s["重倍"].notna()
+    sigs = [  # 名字, 比的范围, 范围, 有, 两年回放, 回放方向（+1 有更好 / −1 有更差 / 0 没差别）
+        ("判 ✅▲", "对判 ❌ 的（❌ 也假设照做）", s["几成"].notna(), ok, "+0.49", 1),
+        ("重 ≥ 2 倍", "判 ✅▲ 里，对不重的", ok, heavy, "+0.18", 1),
+        ("重 ≥ 3 倍", "判 ✅▲ 且重的里面，对重 2–3 倍", ok & heavy, s["重倍"] >= 3, "+0.17", 1),
+        ("腿2秒进", "判 ✅▲ 里，对主力动得多的", ok, s["腿2秒进"], "−0.45", -1),
+        ("腿2秒进！", "判 ✅▲ 且腿2秒进的里面，对普通腿2秒进", ok & s["腿2秒进"], s["腿2秒进！"], "更差（11-07 腿2秒进档位）", -1),
+        ("换月（三级都算）", "判 ✅▲ 的同品种跨月里，对没换月的", ok & (s["品种"] != "nr-ru"), s["换月"], "更差（11-07 换月腿2）", -1),
+        ("量少", "判 ✅▲ 里，对不量少的", ok, s["量少"], "≈ 0", 0),
+        ("薄大", "sc 判 ✅▲ 里，对不薄大的", ok & (s["品种"] == "sc"), s["薄大"], "更差（10-30 sc 薄大）", -1),
+    ]
+    rows = []
+    for name, scope, base, has, ref, sign in sigs:
+        a, b = s[base & has], s[base & ~has]
+        cells = [name, scope] + signal_cells(a)[:3] + signal_cells(b)[:3]
+        if not len(a) or not len(b):
+            rows.append(cells + ["", ref, "没有样本" if not len(a) and not len(b) else "只有一边，比不了"])
+            continue
+        diff = a["几成"].mean() - b["几成"].mean()
+        se = math.sqrt((a["几成"].var(ddof=1) / len(a) if len(a) > 1 else 0) + (b["几成"].var(ddof=1) / len(b) if len(b) > 1 else 0))
+        if min(len(a), len(b)) < SIG_MIN:
+            word = "样本少"
+        elif abs(diff) < se:
+            word = "差别不明显"
+        elif sign == 0:
+            word = "回放说没差别，实盘" + ("有它更好" if diff > 0 else "有它更差")
+        else:
+            word = "和回放一致" if (diff > 0) == (sign > 0) else "和回放相反"
+        rows.append(cells + [sig_num(diff), ref, word])
+    out += ("<h4>单条信号：有它 vs 没有它</h4>"
+            + table(["信号", "比的是谁", "有：根数", "挂进", "每次", "没有：根数", "挂进", "每次", "差（有 − 没有）", "两年回放的差", "实盘"], rows))
+    return out
+
+
 def rule_money(rec: pd.DataFrame) -> str:
     """规则六：照浮层标签做赚不赚钱。判 ✅▲ 的按品种、符号、重 / 不重、实盘 / 回放累计；判 ❌ 但实际开到的另列「错过的」。"""
     s = rec[rec["59分判断"].isin(["真", "半真"])].copy()
@@ -1264,10 +1402,20 @@ def write_page(rec: pd.DataFrame) -> Path | None:
                 f"成交后 {SIM_DELAY} 秒内不止损，都按当时立刻能平的价平；"
                 "tick 只到开盘后 60 秒，到时按最后能平的价算（两年回放最多拿 300 秒）。全市场的量都算成自己的，是上限；腿2 当成和腿1 同时成交。"
                 "「档」= 最小变动价位，毛元 = 档 × 最小变动价位 × 合约乘数（不同品种一手大小差很多，元数平均主要看 sc）。"
-                f"手续费只有 {fees or '（还没填）'}，是他的成交记录算的；别的品种还没数，只算毛的（「扣费后」写 —）。"
+                f"手续费只有 {fees or '（还没填）'}，是他的成交记录算的；别的品种（ag 和没成交过的 zn pb sn ni）还没数，只算毛的（「扣费后」写 —）。"
                 "首笔半按现在的系数算（ag 10-31 以前浮层上是挂一半，现在是三分之一）；10-23 实盘还是 v1，没有首笔半，不算。"
                 "实盘才十来次开盘，结论看「样本」那一列。</p>"
                 + rule_money(rec) + "</div>")
+    body.append("<div class='card'><h3>规则七：浮层上每个色块、每条信号，真实开盘里帮没帮上忙</h3>"
+                "<p class='note'>色块和各种标记都是照两年回放（到 2026-09）定的，这里拿 10-21 以后规则没见过的开盘对答案，每次开盘后自动累计。"
+                "<b>标记和色块按现在的规则重算</b>，当时浮层上贴的可能不一样（换月 11-07 才有，老开盘用那天的日行情补算；薄大、腿2秒进当时没存数的补不了）；"
+                "✅▲❌ 是当时真贴的那个。"
+                "钱按「程序版·正滑一半」算（规则六下面那张表的口径：开盘那一下的正滑只拿一半、腿2 按半秒后追），每根一手、在首笔半挂、没挂进算 0，判 ❌ 的也假设照做。"
+                "品种之间一档大小不一样，所以换成「门槛的几成」：+0.4 = 这根针赚了 0.4 个门槛。"
+                "「差」是把所有品种混在一起直接比的，没有按品种分开，品种搭配不同也会带来差别；"
+                f"一边不到 {SIG_MIN} 根写「样本少」，差得比抽样误差还小写「差别不明显」。只是线索。"
+                "两年回放那一列是 11-07 算的（测试/2026-11-07_信号重要度/小结.md），那以后规则又改过（换月分级、昨收 30 秒均价、主力按成交量）。</p>"
+                + rule_signals(rec) + "</div>")
     body.append("<h2>涨跌幅统计</h2><p class='note'>每次开盘、每个品种算一次。外盘涨跌 = 国内收盘 → 开盘前 7 分钟；"
                 "主力跳空 = 主力（腿2）竞价价对昨收；国内跟了几成 = 主力跳空 ÷ 外盘涨跌的中位数（外盘不到 0.3% 的不算）。"
                 "右边的两年回测是 2024-05 起的夜盘开盘（日线开盘价，外盘算到 21:00），只当对照。</p>" + move_stats(rec))
