@@ -743,6 +743,11 @@ def close_avg(api, s: str, o: datetime, n: int = None, df: pd.DataFrame = None):
         return None
     e = ends[hit].max()  # 上一节收盘时刻（15:00 / 23:00 / 01:00 / 02:30）
     dv, da, gap = df["volume"].diff(), df["amount"].diff(), df["t"].diff()
+    # 冷门合约的序列可能跨节：夜盘最后一笔在 22:58，却仍留着下午 14:59 的快照。
+    # 候选收盘以后已经有成交（含新交易日累计量重置），它就不是上一节的昨收；交给 close_of 退回最后一笔。
+    # 只有时间更新、累计量额没变的盘前快照不算新成交。
+    if ((df["t"] > e) & (df["volume"] > 0) & ((dv != 0) | (da != 0))).any():
+        return None
     w = (df["t"] > e - pd.Timedelta(seconds=n)) & (df["t"] <= e) & (dv > 0) & (da > 0) & (gap <= pd.Timedelta(minutes=10))
     v = dv[w].sum()
     mult = num(api.get_quote(s).volume_multiple)

@@ -147,10 +147,11 @@ def collect(rec: pd.DataFrame) -> tuple[list[dict], list[dict], dict]:
     """返回 (开盘单逐格, 开盘 10 秒内平老仓的, 覆盖情况)。"""
     days = trade_days()
     day_openings = sorted({o[:10] for o in rec["开盘"] if o.endswith("09:00")})
-    all_days = sorted({d for v in days.values() for d in v})
-    missing = [d for d in day_openings if all_days and all_days[0] <= d <= all_days[-1] and d not in all_days]
+    missing_by_acct = {acct: [d for d in day_openings if ds[0] <= d <= ds[-1] and d not in ds]
+                       for acct, ds in days.items()}
     cells, old_closes, fee_cache = {}, [], {}
     for acct, ds in sorted(days.items()):
+        missing = missing_by_acct[acct]  # 另一账号有记录，不能补足这个账号的账本缺口
         closes, final, crossed, removed = trace_book(acct, ds, missing)
         last = ds[-1]
         for d in ds:
@@ -219,7 +220,8 @@ def collect(rec: pd.DataFrame) -> tuple[list[dict], list[dict], dict]:
                 if op and opening_of(x["开仓时间"], d) != op:  # 同一次开盘开、10 秒内就平的是开盘单自己止盈 / 止损，不算
                     old_closes.append(dict(号=acct, 开盘=op, 组合=x["组合"], 方向=x["开仓方向"].replace("开", "平"), 手数=float(x["手数"]),
                                            来源=f"平今（{x['开仓时间']} 开的）"))
-    cover = dict(days=days, missing=missing, day_openings=day_openings)
+    cover = dict(days=days, missing=sorted({d for ds in missing_by_acct.values() for d in ds}),
+                 missing_by_acct=missing_by_acct, day_openings=day_openings)
     return list(cells.values()), old_closes, cover
 
 
@@ -245,7 +247,9 @@ def text(x) -> str:
 
 def attach(cells: list[dict], rec: pd.DataFrame) -> None:
     """每格对上 开盘复盘.csv 的色块、判断、针，和当时贴的标记。"""
+    import 竞价判断 as jd
     idx = {(r["开盘"], r["组合"]): r for _, r in rec.iterrows()}
+    live = {}  # 按开盘缓存当时的判断基准，兼容未保存「判断昨收价差」的旧复盘 CSV
     for c in cells:
         r = idx.get((c["开盘"], c["组合"]))
         c["开在"] = c["_开"] / c["手数"] if c["手数"] > EPS else None
@@ -254,6 +258,7 @@ def attach(cells: list[dict], rec: pd.DataFrame) -> None:
         if c["算得了手"] <= EPS:
             c["毛"] = c["费"] = None
         c["品种"] = product_of_combo(c["组合"])
+        c["判断昨收价差"], c["顺针基准来源"] = None, ""
         if r is None or not r["有tick"]:
             why = "开盘复盘.csv 没有这个组合（当时不在合约.txt，或主力换了组合名对不上）" if r is None else "那次开盘没取到 tick，开盘复盘没判断"
             c |= dict(色块="没对上", 判断="", 判="", 色块原因=why, 浮层标记="", 判断来源="", 针=None, 昨收价差=None, 顺针="")
@@ -263,7 +268,25 @@ def attach(cells: list[dict], rec: pd.DataFrame) -> None:
                       浮层标记=text(r["浮层标记"]), 判断来源=text(r["判断来源"]), 针=num(r["针"]), 昨收价差=num(r["昨收价差"]))
             if text(r["品种"]):
                 c["品种"] = r["品种"]
-            n, b = c["针"], c["昨收价差"]
+            b = num(r.get("判断昨收价差"))
+            if b is not None:
+                c["顺针基准来源"] = "复盘保存的判断基准"
+            else:
+                op = c["开盘"]
+                if op not in live:
+                    folder = DATA / op.replace(" ", "_").replace(":", "")
+                    try:
+                        live[op] = jd.read_live(folder)
+                    except (OSError, ValueError):
+                        live[op] = {}
+                b = num(live[op].get(c["组合"], {}).get("昨收价差"))
+                if b is not None:
+                    c["顺针基准来源"] = "当次竞价判断.csv"
+            if b is None:
+                b = c["昨收价差"]
+                c["顺针基准来源"] = "旧昨收（判断基准缺失）"
+            c["判断昨收价差"] = b
+            n = c["针"]
             c["顺针"] = "" if n is None or b is None or abs(n - b) < EPS else ("是" if (n > b) == (c["方向"] == "空开") else "否")
         t = then_tags(c["开盘"], c["组合"])
         c["当时符号"] = "" if t is None else t["符号"]
@@ -332,7 +355,7 @@ CELL_HEAD = ["开盘", "号", "组合", "判", "色块", "色块原因", "方向
 def write_csv(cells: list[dict]) -> None:
     cols = ["开盘", "交易日", "号", "组合", "品种", "方向", "顺针", "判", "判断", "判断来源", "色块", "色块原因", "浮层标记",
             "当时符号", "当时标记", "标记对照", "手数", "算得了手", "当天平手", "隔夜平手", "算不了手", "开在", "平在",
-            "毛", "费", "净", "怎么平的", "针", "昨收价差"]
+            "毛", "费", "净", "怎么平的", "针", "昨收价差", "判断昨收价差", "顺针基准来源"]
     df = pd.DataFrame([{k: c.get(k) for k in cols} for c in sorted(cells, key=lambda c: (c["开盘"], c["组合"], c["号"]))], columns=cols)
     df = df.rename(columns={"毛": "毛盈亏", "费": "手续费", "净": "净盈亏", "开在": "开在（均）", "平在": "平在（均）"})
     for k in ("毛盈亏", "手续费", "净盈亏"):
@@ -377,7 +400,7 @@ def write_html(cells: list[dict], olds: list[dict], cover: dict, rec: pd.DataFra
     bad = sorted(by(lambda c: c["色块"] == "关" or c["判断"] in ("假", "不判断")), key=lambda c: (c["开盘"], c["组合"], c["号"]))
     body += ["<h2>二、贴「关」/ 判 ❌ / ？ 却做了的</h2>",
              table(CELL_HEAD, [cell_row(c) for c in bad]) if bad else "<p>没有。</p>",
-             "<p class='note'>顺针：空开时针在昨收价差上面、多开时针在下面 = 是（顺着针的方向接）。</p>"]
+             "<p class='note'>顺针：空开时针在判断基准上面、多开时针在下面 = 是。优先使用当次竞价判断的昨收，缺失才退回旧昨收；逐格 CSV 的「顺针基准来源」列可核对。</p>"]
     # 表三
     heavy = rec[rec["色块"] == "重"]
     rows = []
@@ -445,7 +468,8 @@ def write_html(cells: list[dict], olds: list[dict], cover: dict, rec: pd.DataFra
              f"<p>有成交记录（两个号都有）的开盘 {len(covered)} 次：{covered[0] if covered else ''} ~ {covered[-1] if covered else ''}"
              + (f"；其中 {'、'.join(no_tick)} 没取到 tick，那次的单色块对不上（算在「没对上」）" if no_tick else "") + "。</p>",
              table(["开盘", "交易日", "成交记录"], [[op, day_of_opening(op, cover["day_openings"]), st[op]] for op in ops if st[op] != "有"]),
-             f"<p class='note'>缺的交易日：{'、'.join(cover['missing']) or '无'}（见 成交/缺的记录.md）。"
+             "<p class='note'>缺的交易日（分账号）：" + "；".join(
+                 f"账号{a}：{'、'.join(ds) or '无'}" for a, ds in sorted(cover["missing_by_acct"].items())) + "。"
              "缺记录那天的开盘不知道做没做；那天前后拿着的仓，平在哪一组也说不清，算进「算不了」。</p>"]
     # 逐格
     diff = [c for c in cells if c["标记对照"] == "不一样"]
