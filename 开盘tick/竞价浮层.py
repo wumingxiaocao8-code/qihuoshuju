@@ -751,8 +751,10 @@ def head_boxes(rect, board: dict) -> dict:
     out = {}
     for i, j, key, x0, y0, x1, y1 in cells(rect, board):
         if key:  # 宽高按固定值取整，免得行线的小数让同一格每次截的大小差 1 像素
-            left, top = round(x0 - rect[0] + 2 * k), round(y0 - rect[1] + k)
-            out[(i, j)] = (left, top, left + round((x1 - x0) * HEAD_W - 2 * k), top + round((HEAD_H - 1) * k))
+            # 11-13：往里缩，避开点中格子的白边框和行线（原来点了别的格子，那格和存样子时点中的那格都报「对不上」）
+            dl, dt = round(2 * k), round(3.5 * k)
+            left, top = round(x0 - rect[0] + 2 * k) + dl, round(y0 - rect[1] + k) + dt
+            out[(i, j)] = (left, top, left + round((x1 - x0) * HEAD_W - 2 * k) - dl, top + round((HEAD_H - 1) * k) - dt)
     return out
 
 
